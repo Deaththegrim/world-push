@@ -1,6 +1,6 @@
 [project]
 name = "world-push"
-version = "0.1.1"
+version = "0.1.2"
 description = "Check and push Voyage world JSON through the Creator API, with a backup first. Unofficial."
 requires-python = ">=3.11"
 license = { text = "MIT" }

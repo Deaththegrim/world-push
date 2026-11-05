@@ -44,6 +44,6 @@ jobs:
       - run: |
           mv out/WorldPush-Linux/WorldPush WorldPush-linux
           mv out/WorldPush-Windows/WorldPush.exe WorldPush-windows.exe
-          gh release create "$GITHUB_REF_NAME" WorldPush-linux WorldPush-windows.exe --repo "$GITHUB_REPOSITORY" --prerelease --title "World Push $GITHUB_REF_NAME" --notes "First test build. Windows is untested so far."
+          gh release create "$GITHUB_REF_NAME" WorldPush-linux WorldPush-windows.exe --repo "$GITHUB_REPOSITORY" --prerelease --title "World Push $GITHUB_REF_NAME" --notes "Test build: both size limits shown, problems explained in plain words, a help tab. Windows hasn't been run by a person yet."
         env:
           GH_TOKEN: ${{ github.token }}
