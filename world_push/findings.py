@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 DIALOGUE_ONLY = {"generateDialogue": "Style, Tone, and Length", "generateNpcChatSummary": "Summary Guidance",
                  "generateConversationStarters": "Conversation Starter Guidance"}
 PREVIEW_CAP_NOTE = "Voyage allows 1.5x this while it's a draft, but you can't publish until it's under."
+DRAFT_CAP_NOTE = "A draft may run to 1.5x the publish limit. Getting under the draft limit lets you save; you can't publish until it's under the publish limit too."
 
 
 @dataclass
@@ -58,11 +59,13 @@ def group(draft, publish, local=()):
     """the findings, worst first. An error at draft blocks a save; one only at publish means it can be saved but not published."""
     groups = {}
 
-    def add(severity, issue):
+    def add(severity, issue, at_publish=None):
         code, message, path = issue.get("code", ""), issue.get("message", ""), issue.get("path", "")
         title, wrong, fix = _rule(code, message)
-        if severity == "publish":
-            fix = f"{fix} {PREVIEW_CAP_NOTE}" if ".limit." in code else fix
+        if ".limit." in code:
+            fix = f"{fix} {PREVIEW_CAP_NOTE if severity == 'publish' else DRAFT_CAP_NOTE}"
+        if at_publish and at_publish != message:
+            message = f"{message}. To publish: {at_publish}"
         f = groups.setdefault((severity, title, wrong), Finding(severity, title, wrong, fix))
         f.items.append((path, message))
 
@@ -70,8 +73,9 @@ def group(draft, publish, local=()):
         return i.get("code"), i.get("path")
 
     blocking = {key(i) for i in draft.get("errors") or []}
+    publish_says = {key(i): i.get("message") for i in publish.get("errors") or []}
     for i in draft.get("errors") or []:
-        add("error", i)
+        add("error", i, publish_says.get(key(i)))
     for i in publish.get("errors") or []:
         if key(i) not in blocking:
             add("publish", i)

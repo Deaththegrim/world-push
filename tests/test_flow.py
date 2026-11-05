@@ -133,6 +133,18 @@ def test_draft_errors_block_and_publish_errors_only_warn(tmp_path, dirs):
     assert not client.puts
 
 
+def test_a_record_over_both_limits_shows_the_publish_limit_too(tmp_path, dirs):
+    """Voyage's own wording, 2026-11-06: the draft answer names 12,000, the publish answer 8,000, for the same record"""
+    path = "$.npcs.Ann"
+    client = Fake()
+    client.draft = ok("draft", [{"code": "game-state.limit.npc", "message": 'NPC "Ann" exceeds the 12,000 character limit by 57 characters', "path": path}])
+    client.publish = ok("publish", [{"code": "game-state.limit.npc", "message": 'NPC "Ann" exceeds the 8,000 character limit by 4,057 characters', "path": path}])
+    f = do_check(client, write(tmp_path, level=2), dirs).findings[0]
+    assert f.severity == "error" and len(f.items) == 1
+    assert f.items[0][0] == path and "12,000" in f.items[0][1] and "8,000" in f.items[0][1]
+    assert "publish" in f.fix
+
+
 def test_nothing_to_push_and_another_version_are_blocked(tmp_path, dirs):
     client = Fake()
     assert any("already holds" in b for b in do_check(client, write(tmp_path), dirs).blocked)
