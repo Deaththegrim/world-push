@@ -62,7 +62,7 @@ def test_push_backs_up_the_live_draft_first_and_keeps_the_studio_page(tmp_path, 
     client = Fake()
     c = do_check(client, write(tmp_path, level=2), dirs)
     assert not c.blocked and c.first_push and [d[1] for d in c.changes] == [["npcs", "Ann", "level"]]
-    p = flow.push(client, c, **dirs)
+    p = flow.push(client, c, "My World", **dirs)
     assert json.loads(p.backup.read_text(encoding="utf-8"))["world"]["initialGameState"]["npcs"]["Ann"]["level"] == 1
     assert client.puts[0]["description"] == "keep me" and client.puts[0]["initialGameState"]["npcs"]["Ann"]["level"] == 2
     assert p.not_kept == []
@@ -70,7 +70,7 @@ def test_push_backs_up_the_live_draft_first_and_keeps_the_studio_page(tmp_path, 
 
 def test_a_backup_restores_by_pushing_it_like_any_file(tmp_path, dirs):
     client = Fake()
-    p = flow.push(client, do_check(client, write(tmp_path, level=2), dirs), **dirs)
+    p = flow.push(client, do_check(client, write(tmp_path, level=2), dirs), "My World", **dirs)
     c = do_check(client, p.backup, dirs)
     assert [(d[2], d[3]) for d in c.changes] == [(2, 1)]
     flow.push(client, c, **dirs)
@@ -83,13 +83,13 @@ def test_a_failed_backup_means_no_write(tmp_path, dirs):
     blocker = tmp_path / "file"
     blocker.write_text("x")
     with pytest.raises(flow.PushStopped, match="backup"):
-        flow.push(client, c, data_dir=dirs["data_dir"], backup_dir=blocker)
+        flow.push(client, c, "My World", data_dir=dirs["data_dir"], backup_dir=blocker)
     assert not client.puts
 
 
 def test_studio_edits_since_the_last_push_need_the_typed_title(tmp_path, dirs):
     client = Fake()
-    flow.push(client, do_check(client, write(tmp_path, level=2), dirs), **dirs)
+    flow.push(client, do_check(client, write(tmp_path, level=2), dirs), "My World", **dirs)
     client.world["initialGameState"]["npcs"]["Ann"]["level"] = 9
     client.etag = '"studio"'
     c = do_check(client, write(tmp_path, level=3), dirs)
@@ -104,7 +104,7 @@ def test_studio_edits_since_the_last_push_need_the_typed_title(tmp_path, dirs):
 
 def test_voyages_own_bump_is_not_read_as_a_studio_edit(tmp_path, dirs):
     client = Fake()
-    flow.push(client, do_check(client, write(tmp_path, level=2), dirs), **dirs)
+    flow.push(client, do_check(client, write(tmp_path, level=2), dirs), "My World", **dirs)
     client.world["initialGameState"]["compatibilityRevision"] = 14
     client.etag = '"played"'
     assert not do_check(client, write(tmp_path, level=3), dirs).moved
@@ -115,7 +115,7 @@ def test_a_draft_that_moves_after_check_stops_the_push(tmp_path, dirs):
     c = do_check(client, write(tmp_path, level=2), dirs)
     client.etag = '"later"'
     with pytest.raises(flow.PushStopped, match="after you pressed Check"):
-        flow.push(client, c, **dirs)
+        flow.push(client, c, "My World", **dirs)
     assert not client.puts
 
 
@@ -145,13 +145,13 @@ def test_a_conflict_writes_nothing_and_says_so_and_an_unknown_outcome_says_that(
     c = do_check(client, write(tmp_path, level=2), dirs)
     client.fail_put = ApiError(412, "revision_conflict", "stale")
     with pytest.raises(flow.PushStopped, match="nothing was overwritten"):
-        flow.push(client, c, **dirs)
+        flow.push(client, c, "My World", **dirs)
     client.fail_put = ApiError(500, "boom", "boom")
     with pytest.raises(flow.PushStopped, match="may or may not"):
-        flow.push(client, c, **dirs)
+        flow.push(client, c, "My World", **dirs)
     client.fail_put = ConnectionError("gone")
     with pytest.raises(flow.PushStopped, match="may or may not"):
-        flow.push(client, c, **dirs)
+        flow.push(client, c, "My World", **dirs)
     assert not client.puts
 
 
@@ -161,7 +161,7 @@ def test_what_voyage_drops_on_save_is_reported(tmp_path, dirs):
     client = Fake(stored=stored)
     c = do_check(client, write(tmp_path, state, level=1), dirs)
     assert any(f.title.startswith("Instructions Voyage will throw away") for f in c.findings)
-    p = flow.push(client, c, **dirs)
+    p = flow.push(client, c, "My World", **dirs)
     assert [d[1] for d in p.not_kept] == [["aiInstructions", "generateDialogue", "Extra"]]
 
 
@@ -220,3 +220,99 @@ def test_a_voice_with_no_record_is_flagged_and_a_real_one_is_not():
 def test_lost_on_save_ignores_what_voyage_adds_and_empties():
     assert lost_on_save({"a": 1, "e": {}}, {"a": 1.0, "b": 2}) == []
     assert diff({"a": 1}, {"a": 2}) == [("changed", ["a"], 1, 2)]
+
+
+def test_a_computer_with_no_record_of_the_world_needs_the_title(tmp_path, dirs):
+    """pushing from a second computer, or after a reinstall: it can't know what Studio holds"""
+    client = Fake()
+    c = do_check(client, write(tmp_path, level=2), dirs)
+    assert c.needs_title
+    with pytest.raises(flow.PushStopped, match="title"):
+        flow.push(client, c, None, **dirs)
+    assert not client.puts
+
+
+def test_a_studio_edit_to_the_creation_music_is_seen_and_is_a_change(tmp_path, dirs):
+    state = {**copy.deepcopy(STATE), "characterCreationMusic": "fantasy"}
+    client = Fake(state)
+    flow.push(client, do_check(client, write(tmp_path, state, level=2), dirs), "My World", **dirs)
+    client.world["initialGameState"]["characterCreationMusic"] = "nonfantasy"
+    client.etag = '"studio"'
+    c = do_check(client, write(tmp_path, state, level=2), dirs)
+    assert c.moved and [d[1] for d in c.changes] == [["characterCreationMusic"]]
+
+
+def test_a_file_with_nothing_new_records_the_draft_so_later_edits_show(tmp_path, dirs):
+    client = Fake()
+    assert do_check(client, write(tmp_path), dirs).blocked
+    client.world["initialGameState"]["npcs"]["Ann"]["level"] = 9
+    client.etag = '"studio"'
+    c = do_check(client, write(tmp_path, level=2), dirs)
+    assert c.moved and not c.first_push
+
+
+def test_trouble_after_a_landed_push_says_it_landed(tmp_path, dirs, monkeypatch):
+    client = Fake()
+    c = do_check(client, write(tmp_path, level=2), dirs)
+
+    def broken(*_):
+        raise WorldFileError("nothing was sent")
+    monkeypatch.setattr(flow, "fold", broken)
+    with pytest.raises(flow.PushStopped, match="landed") as e:
+        flow.push(client, c, "My World", **dirs)
+    assert "nothing was sent" not in str(e.value).split("(")[0] and client.puts
+
+
+def test_a_save_right_behind_the_push_stays_a_studio_edit(tmp_path, dirs):
+    client = Fake()
+    c = do_check(client, write(tmp_path, level=2), dirs)
+    real = client.replace
+
+    def racing(world, etag):
+        new = real(world, etag)
+        client.world["initialGameState"]["npcs"]["Ann"]["level"] = 9
+        client.etag = '"studio"'
+        return new
+    client.replace = racing
+    assert flow.push(client, c, "My World", **dirs).raced
+    client.replace = real
+    assert [d[3] for d in do_check(client, write(tmp_path, level=3), dirs).studio_edits] == [9]
+
+
+@pytest.mark.parametrize("error, words", [(ApiError(503, "studio_unavailable", "x"), "nothing changed"), (ApiError(0, "too_large", "x"), "nothing changed"),
+                                          (ValueError("odd"), "may or may not")])
+def test_each_failed_write_is_told_as_it_is(tmp_path, dirs, error, words):
+    client = Fake()
+    c = do_check(client, write(tmp_path, level=2), dirs)
+    client.fail_put = error
+    with pytest.raises(flow.PushStopped, match=words):
+        flow.push(client, c, "My World", **dirs)
+
+
+def test_a_backup_of_another_world_is_blocked(tmp_path, dirs):
+    f = tmp_path / "b.json"
+    f.write_text(json.dumps({"etag": "x", "world": {"shortId": "other", "initialGameState": {**STATE, "npcs": {"Ann": {"level": 5}}}}}))
+    assert any("different world" in b for b in do_check(Fake(), f, dirs).blocked)
+
+
+def test_a_top_level_data_key_does_not_swallow_the_world_and_duplicates_refuse(tmp_path):
+    f = tmp_path / "x.json"
+    f.write_text(json.dumps({**STATE, "data": {"heroesVersion": 37}}))
+    assert "npcs" in read_state(f)
+    f.write_text('{"heroesVersion": 37, "npcs": {"Ann": {}, "Ann": {"level": 2}}}')
+    with pytest.raises(WorldFileError, match="twice"):
+        read_state(f)
+
+
+def test_a_broken_emoji_is_named(tmp_path):
+    f = tmp_path / "x.json"
+    f.write_text('{"heroesVersion": 37, "t": "\\ud83d"}')
+    with pytest.raises(WorldFileError, match="emoji"):
+        read_state(f)
+
+
+def test_voyage_refilling_its_own_fields_is_not_a_change():
+    live = {"unassignedAreas": None, "itemSettings": {"tiers": {"a": 1}, "keep": 1}, "npcs": {"A": {"detailType": "detailed", "gone": 1}}}
+    ours = {"unassignedAreas": {}, "itemSettings": {"keep": 1}, "npcs": {"A": {}}}
+    from world_push.worldfile import real_changes
+    assert [d[1] for d in real_changes(live, ours)] == [["npcs", "A", "gone"]]

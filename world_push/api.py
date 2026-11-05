@@ -7,6 +7,7 @@ import requests
 
 BASE = "https://api.aidungeon.com/creator/v1"
 MAX_BODY = 64 * 1024 * 1024   # Voyage's request limit
+MAX_WAIT = 120   # seconds a person sits looking at a busy window before being told instead
 RETRYABLE = {"studio_unavailable", "rate_limited", "request_in_progress"}
 COMPAT_REFUSAL = re.compile(r"requires a newer version of Voyage \(v\d+\.(\d+)\) than this environment supports \(v\d+\.(\d+)\)")
 
@@ -15,6 +16,14 @@ class ApiError(Exception):
     def __init__(self, status, code, message):
         super().__init__(f"HTTP {status} {code}: {message}")
         self.status, self.code, self.message = status, code, message
+
+
+def _retry_after(value):
+    """seconds; the header may also be an HTTP date, which just gets the default wait"""
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 5.0
 
 
 def key_problem(key):
@@ -54,13 +63,21 @@ class Client:
                 raise ApiError(0, "too_large", f"{len(data) / 2**20:.1f} MiB is over Voyage's 64 MiB limit; nothing was sent")
         for attempt in range(self.tries):
             r = self.http.request(method, self.base + path, data=data, headers=h, timeout=300)
-            got = r.json() if r.content and "json" in r.headers.get("Content-Type", "json") else None
+            try:
+                got = r.json() if r.content and "json" in r.headers.get("Content-Type", "json") else None
+            except ValueError:   # a gateway's HTML page with a JSON label, say
+                got = None
             if 200 <= r.status_code < 300:
                 return got, r.headers
             err = got.get("error", {}) if isinstance(got, dict) else {}
+            if not isinstance(err, dict):
+                err = {"message": str(err)}
             code = err.get("code", "")
             if (r.status_code == 429 or code in RETRYABLE) and attempt < self.tries - 1:
-                self.sleep(float(r.headers.get("Retry-After", 5)))
+                wait = _retry_after(r.headers.get("Retry-After"))
+                if wait > MAX_WAIT:
+                    raise ApiError(r.status_code, code or "rate_limited", f"Voyage asked to wait {wait:.0f} seconds. Try again later.")
+                self.sleep(wait)
                 continue
             raise ApiError(r.status_code, code or "?", err.get("message", (r.text or "")[:300]))
         raise ApiError(0, "retries_exhausted", f"{method} {path}")
@@ -112,4 +129,5 @@ class Client:
         if not etag:
             raise ApiError(0, "no_etag", "refusing a write without a revision tag")
         _, headers = self.call("PUT", f"/worlds/{world['shortId']}", {"world": world}, {"If-Match": etag})
-        return headers.get("ETag")
+        new = (headers.get("ETag") or "").strip()
+        return new[2:] if new.startswith("W/") else new

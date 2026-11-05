@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .api import ApiError
 from .findings import group, local_checks
-from .worldfile import VOYAGE_OWN, authored, diff, fold, lost_on_save, read_state
+from .worldfile import KEEP_IF_ABSENT, authored, fold, lost_on_save, read_file, real_changes
 
 DATA_DIR = Path(os.environ.get("APPDATA") or os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "World Push"
 BACKUP_DIR = Path.home() / "Documents" / "World Push backups"
@@ -40,7 +40,10 @@ def _baseline_file(data_dir, short_id):
 
 def read_baseline(data_dir, short_id):
     f = _baseline_file(data_dir, short_id)
-    return json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
+    try:
+        return json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
+    except (OSError, ValueError):   # unreadable counts as no record, and no record asks for the typed title
+        return None
 
 
 def write_baseline(data_dir, short_id, etag, state):
@@ -49,11 +52,11 @@ def write_baseline(data_dir, short_id, etag, state):
     _atomic(f, json.dumps({"etag": etag, "state": state}, ensure_ascii=False))
 
 
-def backup(world, etag, backup_dir=BACKUP_DIR):
+def backup(world, etag, backup_dir=None):
     """the live draft, saved and read back from disk before anything replaces it. A backup that can't be saved stops the push.
     To restore: open this file in the app and push it like any other."""
     safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", world.get("title") or "world").strip(" ._")[:60] or "world"
-    folder = Path(backup_dir) / f"{safe} ({world['shortId']})"
+    folder = Path(backup_dir or BACKUP_DIR) / f"{safe} ({world['shortId']})"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{time.strftime('%Y-%m-%d %H-%M-%S')} before push.json"
     text = json.dumps({"etag": etag, "world": world}, ensure_ascii=False)
@@ -84,17 +87,27 @@ class Check:
         return bool(self.studio_edits)
 
     @property
+    def needs_title(self):
+        """edits in Studio to replace, or no record of this world on this computer (a first push, another computer, a reinstall), which
+        can't tell whether there are any"""
+        return self.moved or self.first_push
+
+    @property
     def can_publish(self):
         return bool(self.publish.get("valid")) and not self.publish.get("errors")
 
 
 def check(client, path, short_id, data_dir=DATA_DIR):
     """everything worth knowing before a push. Downloads and asks Voyage to validate; changes nothing."""
-    ours = fold(read_state(path))
+    state, source = read_file(path)
+    ours = fold(state)
     live, etag = client.download(short_id)
     live_state = fold(live["initialGameState"])
     notes, blocked = [], []
-    for k in VOYAGE_OWN:
+    if source and source != short_id:
+        blocked.append(f"This file is a copy of a different world ({source}), not {short_id}. Pick that world, or if you really mean to, "
+                       "push the bare world JSON from Studio's editor instead.")
+    for k in KEEP_IF_ABSENT:
         if k in live_state and k not in ours:
             ours[k] = live_state[k]
     installed = live_state.get("mods") or []
@@ -106,19 +119,23 @@ def check(client, path, short_id, data_dir=DATA_DIR):
     lv, ov = live_state.get("heroesVersion"), ours.get("heroesVersion")
     if lv != ov:
         blocked.append(f"Your file is world version {ov}, and the live draft is version {lv}. Export a fresh copy from Studio and make your edits in that.")
+    revision = ours.get("compatibilityRevision")
     draft = client.validate(ours, "draft")
     publish = client.validate(ours, "publish")
+    if ours.get("compatibilityRevision") != revision:
+        notes.append(f"Lowered compatibilityRevision from {revision} to {ours['compatibilityRevision']}: Voyage's API only takes up to that number. It sets its own again on save.")
     if draft.get("errors") or not draft.get("valid"):
         blocked.append("Voyage would refuse to save this file. Fix the errors below first.")
     base = read_baseline(data_dir, short_id)
     edits = []
     if base and base["etag"] != etag:
-        edits = diff(authored(fold(base["state"])), authored(live_state))
-    changes = diff(authored(live_state), authored(ours))
+        edits = real_changes(authored(fold(base["state"])), authored(live_state))
+    changes = real_changes(authored(live_state), authored(ours))
     if not changes:
         blocked.append("The live draft already holds this file. Nothing to push.")
+        write_baseline(data_dir, short_id, etag, live_state)   # this is the state to notice Studio edits against from now on
     return Check(short_id, live.get("title") or short_id, etag, live, ours, draft, publish,
-                 group(draft, publish, local_checks(ours)), changes, edits, base is None, blocked, notes)
+                 group(draft, publish, local_checks(ours)), changes, edits, base is None and bool(changes), blocked, notes)
 
 
 @dataclass
@@ -126,23 +143,27 @@ class Pushed:
     etag: str
     backup: Path
     not_kept: list      # what Voyage changed or dropped of what was sent, as (kind, path, sent, stored)
+    raced: bool = False  # someone else saved between the push and the read back
 
 
 class PushStopped(Exception):
     """nothing was written, or the outcome is stated in the message"""
 
 
-def push(client, c, typed_title=None, data_dir=DATA_DIR, backup_dir=BACKUP_DIR):
+CLEAN_REFUSALS = {"studio_unavailable", "rate_limited", "request_in_progress", "too_large", "no_etag"}   # Voyage's guide: nothing was written
+
+
+def push(client, c, typed_title=None, data_dir=DATA_DIR, backup_dir=None):
     if c.blocked:
         raise PushStopped(" ".join(c.blocked))
-    if c.moved and (typed_title or "").strip() != c.title.strip():
-        raise PushStopped("This draft was edited in Studio since your last push. Type the world's exact title to replace those edits.")
+    if c.needs_title and (typed_title or "").strip() != c.title.strip():
+        raise PushStopped("Type the world's exact title to confirm this push.")
     live, etag = client.download(c.short_id)
     if etag != c.etag:
         raise PushStopped("The draft changed in Studio after you pressed Check. Nothing was written. Press Check again.")
     try:
         saved = backup(live, etag, backup_dir)
-    except OSError as e:
+    except (OSError, ValueError) as e:
         raise PushStopped(f"The backup couldn't be saved ({e}), so nothing was pushed.") from e
     world = {**live, "initialGameState": c.sending}   # title, image, tags, description and visibility stay Studio's
     try:
@@ -150,15 +171,18 @@ def push(client, c, typed_title=None, data_dir=DATA_DIR, backup_dir=BACKUP_DIR):
     except ApiError as e:
         if e.status == 412:
             raise PushStopped("The draft changed in Studio during the push, so nothing was overwritten. Press Check again.") from e
-        if e.code == "request_status_unknown" or e.status >= 500 or e.status == 0:
-            raise PushStopped(f"Voyage didn't confirm the push ({e}). It may or may not have landed. Press Check to see what the draft holds. Your backup: {saved}") from e
-        raise PushStopped(f"Voyage refused the push, so nothing changed: {e}") from e
-    except OSError as e:   # requests' connection and timeout errors
-        raise PushStopped(f"The connection dropped during the push ({type(e).__name__}). It may or may not have landed. Press Check to see what the draft holds. Your backup: {saved}") from e
+        if e.code in CLEAN_REFUSALS or (e.status and e.status < 500 and e.code != "request_status_unknown"):
+            raise PushStopped(f"Voyage refused the push, so nothing changed: {e}") from e
+        raise PushStopped(f"Voyage didn't confirm the push ({e}). It may or may not have landed. Press Check to see what the draft holds. Your backup: {saved}") from e
+    except Exception as e:   # the request went out and the answer is unknown, whatever broke
+        raise PushStopped(f"The push was interrupted ({type(e).__name__}: {e}). It may or may not have landed. Press Check to see what the draft holds. Your backup: {saved}") from e
     try:
         back, back_etag = client.download(c.short_id)
-    except (ApiError, OSError) as e:
-        raise PushStopped(f"The push landed, but reading it back failed ({e}). Press Check to confirm. Your backup: {saved}") from e
-    stored = fold(back["initialGameState"])
-    write_baseline(data_dir, c.short_id, back_etag or new_etag, stored)
-    return Pushed(back_etag or new_etag, saved, lost_on_save(authored(c.sending), authored(stored)))
+        if new_etag and back_etag != new_etag:   # a save in Studio landed right behind ours: that edit is theirs, not the baseline
+            write_baseline(data_dir, c.short_id, new_etag, c.sending)
+            return Pushed(new_etag, saved, [], raced=True)
+        stored = fold(back["initialGameState"])
+        write_baseline(data_dir, c.short_id, back_etag or new_etag, stored)
+        return Pushed(back_etag or new_etag, saved, lost_on_save(authored(c.sending), authored(stored)))
+    except Exception as e:
+        raise PushStopped(f"The push landed, but checking it afterwards failed ({type(e).__name__}: {e}). Press Check to confirm what the draft holds. Your backup: {saved}") from e

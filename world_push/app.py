@@ -7,7 +7,7 @@ import traceback
 from importlib.resources import files
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QStandardPaths, Qt, QThreadPool, QUrl, Signal, Slot
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QPalette
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QPushButton, QSplitter, QTabWidget, QTextBrowser, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
@@ -79,6 +79,7 @@ class MainWindow(QMainWindow):
         self.pool = QThreadPool.globalInstance()
         self.client, self.path, self.result = None, None, None
         self.tasks = set()
+        self.working = False
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -122,9 +123,11 @@ class MainWindow(QMainWindow):
         self.banner_title = QLabel("Pick a world and a file, then press Check.", self.banner)
         self.banner_title.setObjectName("BannerTitle")
         self.banner_title.setWordWrap(True)
+        self.banner_title.setTextFormat(Qt.TextFormat.PlainText)   # error text can hold a server's HTML page
         self.banner_body = QLabel("Check writes nothing to Voyage.", self.banner)
         self.banner_body.setObjectName("Muted")
         self.banner_body.setWordWrap(True)
+        self.banner_body.setTextFormat(Qt.TextFormat.PlainText)
         self.banner_body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         inner.addWidget(self.banner_title)
         inner.addWidget(self.banner_body)
@@ -180,6 +183,7 @@ class MainWindow(QMainWindow):
         self.banner_body.setText(body)
 
     def busy(self, on):
+        self.working = on
         for b in (self.check_btn, self.browse_btn, self.refresh_btn, self.key_btn, self.world):
             b.setEnabled(not on)
         if on:
@@ -193,7 +197,11 @@ class MainWindow(QMainWindow):
         def finish(slot):
             def go(value):
                 self.tasks.discard(task)
-                slot(value)
+                try:
+                    slot(value)
+                except Exception as e:   # a failure in the follow-up must not leave the window disabled and silent
+                    traceback.print_exc()
+                    self.on_failed(e)
             return go
 
         task.signals.done.connect(finish(done))
@@ -269,7 +277,16 @@ class MainWindow(QMainWindow):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
 
+    def closeEvent(self, event):
+        if self.working:   # a push can't be taken back, and closing would lose its outcome
+            event.ignore()
+            self.set_banner("warn", "Still working. Wait for this to finish before closing.", self.banner_body.text())
+        else:
+            event.accept()
+
     def dropEvent(self, event):
+        if self.working:   # the running check belongs to the file it started with
+            return
         urls = event.mimeData().urls()
         if urls:
             self.set_file(urls[0].toLocalFile())
@@ -314,6 +331,9 @@ class MainWindow(QMainWindow):
         elif c.moved:
             self.set_banner("warn", f"{c.title} was edited in Studio since your last push.",
                             "\n".join([f"Pushing replaces {len(c.studio_edits):,} Studio edits; see the Edits made in Studio tab. You'll have to type the world's title to confirm."] + lines))
+        elif c.first_push and c.can_publish:
+            self.set_banner("warn", "Ready, but this computer hasn't pushed this world before.",
+                            "\n".join(["So it can't tell Studio edits from your own. Read What changes first: anything you don't recognise would be replaced. You'll type the world's title to confirm."] + lines))
         elif not c.can_publish:
             self.set_banner("warn", "This can be saved as a draft, but you can't publish it yet.", "\n".join(lines))
         else:
@@ -382,19 +402,21 @@ class MainWindow(QMainWindow):
             return
         typed = None
         where = f"{c.title} [{c.short_id}]"
-        if c.moved:
-            typed, ok = QInputDialog.getText(self, "Replace edits made in Studio?",
-                                             f"{where} was edited in Studio since your last push from this app. Pushing replaces "
-                                             f"{len(c.studio_edits):,} of those edits (a backup is saved first).\n\nType the world's title to confirm:\n{c.title}")
+        name = Path(self.path).name
+        if c.needs_title:
+            why = (f"{where} was edited in Studio since your last push from this app. Pushing replaces {len(c.studio_edits):,} of those edits."
+                   if c.moved else f"This computer hasn't pushed {where} before, so it can't tell if Studio holds edits you'd want to keep. Check the What changes tab.")
+            typed, ok = QInputDialog.getText(self, "Replace this draft?",
+                                             f"{why}\n\nFile: {name}\n{len(c.changes):,} changes. A backup of the live draft is saved first. Nothing gets published.\n\n"
+                                             f"Type the world's title to confirm:\n{c.title}")
             if not ok:
                 return
             if typed.strip() != c.title.strip():
                 self.set_banner("warn", "The title didn't match, so nothing was pushed.")
                 return
         else:
-            first = "\n\nThis is your first push to this world from this app, so it can't tell if Studio has edits you'd want to keep. Look through the What changes tab." if c.first_push else ""
-            answer = QMessageBox.question(self, "Push to draft?", f"Replace the draft of {where} with this file?\n\n{len(c.changes):,} changes. "
-                                          f"A backup of the live draft is saved first. Nothing gets published.{first}")
+            answer = QMessageBox.question(self, "Push to draft?", f"Replace the draft of {where} with {name}?\n\n{len(c.changes):,} changes. "
+                                          "A backup of the live draft is saved first. Nothing gets published.")
             if answer != QMessageBox.StandardButton.Yes:
                 return
         client = self.client
@@ -406,7 +428,9 @@ class MainWindow(QMainWindow):
         self.busy(False)
         self.invalidate()
         where = f"Backup of the draft as it was: {p.backup}"
-        if p.not_kept:
+        if p.raced:
+            self.set_banner("warn", "Pushed, but someone saved in Studio straight after.", f"Your push landed, then the draft changed again. Press Check to see those edits.\n{where}")
+        elif p.not_kept:
             paths = "\n".join(f"  {' > '.join(map(str, d[1]))}" for d in p.not_kept[:12])
             more = f"\n  ...and {len(p.not_kept) - 12:,} more" if len(p.not_kept) > 12 else ""
             self.set_banner("warn", f"Pushed, but Voyage changed or dropped {len(p.not_kept):,} things you sent.", f"{where}\n{paths}{more}")
@@ -414,7 +438,11 @@ class MainWindow(QMainWindow):
             self.set_banner("ok", "Pushed, and it read back the same. Not published.", where)
 
     def open_backups(self):
-        flow.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            flow.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self.set_banner("warn", "Couldn't open the backups folder.", str(e))
+            return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(flow.BACKUP_DIR)))
 
 
@@ -439,6 +467,9 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("World Push")
     install_theme(app)
+    documents = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)   # the real one, under OneDrive too
+    if documents:
+        flow.BACKUP_DIR = Path(documents) / "World Push backups"
     win = MainWindow()
     win.show()
     if os.environ.get("WORLD_PUSH_SMOKE"):   # the build check: the window and its theme load inside the packaged app
