@@ -60,24 +60,35 @@ def group(draft, publish, local=()):
     groups = {}
 
     def add(severity, issue, at_publish=None):
-        code, message, path = issue.get("code", ""), issue.get("message", ""), issue.get("path", "")
+        code, message, path = issue.get("code") or "", issue.get("message") or "", issue.get("path") or ""
         title, wrong, fix = _rule(code, message)
-        if ".limit." in code:
+        if ".limit." in code and severity != "warning":
             fix = f"{fix} {PREVIEW_CAP_NOTE if severity == 'publish' else DRAFT_CAP_NOTE}"
         if at_publish and at_publish != message:
-            message = f"{message}. To publish: {at_publish}"
+            message = f"{message}. To publish: {at_publish}" if message else at_publish
         f = groups.setdefault((severity, title, wrong), Finding(severity, title, wrong, fix))
         f.items.append((path, message))
 
     def key(i):
         return i.get("code"), i.get("path")
 
-    blocking = {key(i) for i in draft.get("errors") or []}
-    publish_says = {key(i): i.get("message") for i in publish.get("errors") or []}
-    for i in draft.get("errors") or []:
-        add("error", i, publish_says.get(key(i)))
+    shown = {(key(i), i.get("message")) for i in draft.get("errors") or []}
+    publish_says = {}
     for i in publish.get("errors") or []:
-        if key(i) not in blocking:
+        publish_says.setdefault(key(i), []).append(i.get("message"))
+    drafted = [key(i) for i in draft.get("errors") or []]
+
+    def size_at_publish(i):
+        """a size limit's other number. Two errors on one place can't be paired, so each keeps its own words."""
+        said = publish_says.get(key(i), [])
+        return said[0] if ".limit." in (i.get("code") or "") and len(said) == 1 and drafted.count(key(i)) == 1 else None
+
+    for i in draft.get("errors") or []:
+        paired = size_at_publish(i)
+        add("error", i, paired)
+        shown.add((key(i), paired))
+    for i in publish.get("errors") or []:
+        if (key(i), i.get("message")) not in shown:
             add("publish", i)
     seen = set()
     for i in (draft.get("warnings") or []) + (publish.get("warnings") or []):

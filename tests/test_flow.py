@@ -145,6 +145,64 @@ def test_a_record_over_both_limits_shows_the_publish_limit_too(tmp_path, dirs):
     assert "publish" in f.fix
 
 
+def limit(name, cap, over):
+    return {"code": "game-state.limit.npc", "message": f'NPC "{name}" exceeds the {cap:,} character limit by {over:,} characters', "path": f"$.npcs.{name}"}
+
+
+def test_each_record_gets_its_own_publish_limit():
+    f = group({"errors": [limit("Ann", 12000, 1), limit("Bob", 12000, 2)]}, {"errors": [limit("Ann", 8000, 4001), limit("Bob", 8000, 4002)]})[0]
+    said = dict(f.items)
+    assert "4,001" in said["$.npcs.Ann"] and "4,002" not in said["$.npcs.Ann"]
+    assert "4,002" in said["$.npcs.Bob"] and "4,001" not in said["$.npcs.Bob"]
+
+
+def test_the_same_message_at_both_stages_is_not_repeated():
+    bad = limit("Ann", 8000, 9)
+    assert group({"errors": [bad]}, {"errors": [bad]})[0].items == [(bad["path"], bad["message"])]
+
+
+def test_two_errors_on_one_place_keep_their_own_messages():
+    a, b = limit("Ann", 12000, 1), limit("Ann", 12000, 2)
+    assert [m for _, m in group({"errors": [a, b]}, {"errors": [a, b]})[0].items] == [a["message"], b["message"]]
+
+
+def test_only_a_size_limit_is_compared_across_stages_or_told_about_drafts():
+    at = {"code": "schema.bad", "path": "$.npcs.Ann"}
+    f = group({"errors": [{**at, "message": "one wording"}]}, {"errors": [{**at, "message": "other wording"}]})[0]
+    assert f.items[0][1] == "one wording" and "draft" not in f.fix
+
+
+def test_the_size_note_fits_the_stage_and_a_warning_gets_none():
+    from world_push.findings import DRAFT_CAP_NOTE, PREVIEW_CAP_NOTE
+    bad = limit("Ann", 8000, 9)
+    refused = group({"errors": [bad]}, {})[0].fix
+    assert DRAFT_CAP_NOTE in refused and PREVIEW_CAP_NOTE not in refused
+    publish_only = group({}, {"errors": [bad]})[0].fix
+    assert PREVIEW_CAP_NOTE in publish_only and DRAFT_CAP_NOTE not in publish_only
+    warned = group({"warnings": [bad]}, {})[0].fix
+    assert DRAFT_CAP_NOTE not in warned and PREVIEW_CAP_NOTE not in warned
+
+
+def test_a_publish_error_is_never_hidden_by_a_draft_error_on_the_same_place():
+    at = {"code": "schema.bad", "path": "$.npcs.Ann"}
+    found = group({"errors": [{**at, "message": "A"}]}, {"errors": [{**at, "message": "B"}, {**at, "message": "A"}]})
+    said = [(f.severity, m) for f in found for _, m in f.items]
+    assert said == [("error", "A"), ("publish", "B")]
+    found = group({"errors": [{"message": "alpha"}]}, {"errors": [{"message": "beta"}]})
+    assert [(f.severity, m) for f in found for _, m in f.items] == [("error", "alpha"), ("publish", "beta")]
+
+
+def test_two_size_errors_on_one_place_still_show_every_publish_number():
+    found = group({"errors": [limit("Ann", 12000, 1), limit("Ann", 12000, 2)]}, {"errors": [limit("Ann", 8000, 3), limit("Ann", 8000, 4)]})
+    said = " ".join(m for f in found for _, m in f.items)
+    assert all(n in said for n in ("by 1 ", "by 2 ", "by 3 ", "by 4 "))
+
+
+def test_a_null_field_can_not_stop_a_check():
+    found = group({"errors": [{"code": None, "message": None, "path": None}]}, {"errors": [{"code": "game-state.limit.npc", "message": "over", "path": None}]})
+    assert all(isinstance(x, str) for f in found for item in f.items for x in item)
+
+
 def test_nothing_to_push_and_another_version_are_blocked(tmp_path, dirs):
     client = Fake()
     assert any("already holds" in b for b in do_check(client, write(tmp_path), dirs).blocked)
