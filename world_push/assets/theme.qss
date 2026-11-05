@@ -150,5 +150,6 @@ QHeaderView::section { background-color: {surface-elev}; border: none; padding: 
 QTabWidget::pane { border: 1px solid {border-subtle}; border-radius: 6px; }
 QTabBar::tab { background: {surface}; padding: 8px 16px; border-top-left-radius: 6px; border-top-right-radius: 6px; }
 QTabBar::tab:selected { background: {surface-elev}; color: {text}; font-weight: bold; }
+QTabBar::tab:focus { border-bottom: 2px solid {accent}; }
 QPushButton:disabled { color: {text-faint}; background-color: {surface}; border-color: {border-subtle}; }
 QPushButton#Primary:disabled { background-color: {surface}; color: {text-faint}; border-color: {border-subtle}; }

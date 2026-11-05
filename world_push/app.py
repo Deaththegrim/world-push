@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame, QHB
 
 from . import __version__, flow
 from .api import ApiError, Client, key_problem
+from .explain import HELP, MEANS, plain_place, plain_size
 from .tokens import PALETTES
 from .worldfile import WorldFileError
 
@@ -137,6 +138,10 @@ class MainWindow(QMainWindow):
         self.problems, self.problem_text = self._pane("Problems", ["Problem", "How many"], self.show_problem)
         self.changes, self.change_text = self._pane("What changes", ["Field", "Change"], self.show_change)
         self.edits, self.edit_text = self._pane("Edits made in Studio", ["Field", "Change"], self.show_change)
+        self.edits_tab = self.tabs.count() - 1
+        self.help_text = QTextBrowser(self)
+        self.help_text.setHtml(HELP)
+        self.tabs.addTab(self.help_text, "What does this mean?")
         box.addWidget(self.tabs, 1)
 
         row = QHBoxLayout()
@@ -171,9 +176,8 @@ class MainWindow(QMainWindow):
         return tree, text
 
     def _set_edits_tab(self, count):
-        i = self.tabs.count() - 1
-        self.tabs.setTabVisible(i, bool(count))
-        self.tabs.setTabText(i, f"Edits made in Studio ({count:,})")
+        self.tabs.setTabVisible(self.edits_tab, bool(count))
+        self.tabs.setTabText(self.edits_tab, f"Edits made in Studio ({count:,})")
 
     def set_banner(self, state, title, body=""):
         self.banner.setProperty("state", state)
@@ -351,7 +355,7 @@ class MainWindow(QMainWindow):
             top.setData(0, ItemRole, (f, None))
             first = first or top
             for where, message in f.items:
-                child = QTreeWidgetItem(top, [where.replace('$.', ''), ""])
+                child = QTreeWidgetItem(top, [plain_place(where), ""])
                 child.setData(0, ItemRole, (f, (where, message)))
         if first:
             self.problems.setCurrentItem(first)
@@ -364,12 +368,16 @@ class MainWindow(QMainWindow):
         f, one = item.data(0, ItemRole)
         if one is None and len(f.items) == 1:
             one = f.items[0]
-        parts = [f"<h3>{html.escape(f.title)}</h3><p><b>What's wrong</b><br>{html.escape(f.wrong)}</p><p><b>How to fix it</b><br>{html.escape(f.fix)}</p>"]
+        parts = [f"<h3>{html.escape(f.title)}</h3><p>{html.escape(MEANS[f.severity])}</p>"]
+        size = plain_size(one[1], f.severity) if one else None
+        if size:
+            parts.append(f"<p><b>In plain numbers</b><br>{html.escape(size)}</p>")
+        parts.append(f"<p><b>What's wrong</b><br>{html.escape(f.wrong)}</p><p><b>How to fix it</b><br>{html.escape(f.fix)}</p>")
         if one:
-            parts.append(f"<p><b>Where</b><br>{html.escape(one[0])}</p><p><b>Voyage says</b><br>{html.escape(one[1])}</p>")
+            parts.append(f"<p><b>Where</b><br>{html.escape(plain_place(one[0]))}</p><p><b>Voyage says</b><br>{html.escape(one[1])}</p>")
         else:
             parts.append(f"<p>{len(f.items):,} places. Expand this line to see each one, or look at one below.</p>"
-                         f"<p><b>For example</b><br>{html.escape(f.items[0][0])}<br>{html.escape(f.items[0][1])}</p>")
+                         f"<p><b>For example</b><br>{html.escape(plain_place(f.items[0][0]))}<br>{html.escape(f.items[0][1])}</p>")
         self.problem_text.setHtml("".join(parts))
 
     def fill_changes(self, tree, changes, text, intro):

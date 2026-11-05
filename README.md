@@ -13,7 +13,8 @@ Get the Linux or Windows file from the [Releases](../../releases) page. It's a s
 1. Run the app and paste your API key. In Studio: open any world, then Settings, then API keys. The key stays on your computer in a plain text file in your user folder (not encrypted), and is only sent to Voyage.
 2. Pick the world, and drop your JSON on the window (or press Browse).
 3. Press **Check**. This writes nothing. You get:
-   - **Problems:** Voyage's errors and warnings grouped by type, each with what's wrong and how to fix it. Red stops a save, orange stops publishing, grey is a warning.
+   - **Problems:** Voyage's errors and warnings grouped by type, each with what's wrong, how to fix it, and how much to cut if it's too long. Red stops a save, orange stops publishing, grey is a warning. Drafts get more room than published worlds, so there are two size limits (an NPC card is 12,000 characters in a draft, 8,000 to publish).
+   - **What does this mean?:** the words and rules explained, if you're new to this.
    - **What changes:** every field that differs from the live draft, with before and after.
    - **Edits made in Studio:** anything changed in Studio since your last push from this app.
 4. Press **Back up and push**. If Studio has edits since your last push, or this computer hasn't pushed this world before, you have to type the world's title to confirm.

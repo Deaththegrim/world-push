@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 
 DIALOGUE_ONLY = {"generateDialogue": "Style, Tone, and Length", "generateNpcChatSummary": "Summary Guidance",
                  "generateConversationStarters": "Conversation Starter Guidance"}
-PREVIEW_CAP_NOTE = "Voyage allows 1.5x this while it's a draft, but you can't publish until it's under."
-DRAFT_CAP_NOTE = "A draft may run to 1.5x the publish limit. Getting under the draft limit lets you save; you can't publish until it's under the publish limit too."
+PREVIEW_CAP_NOTE = "Drafts have a higher limit, so you can keep saving it, but it has to be under this limit to publish."
+DRAFT_CAP_NOTE = "Drafts have higher limits than published worlds, so there are two limits: one to save, and a lower one to publish."
 
 
 @dataclass
@@ -20,8 +20,8 @@ class Finding:
 
 RULES = [
     (r"game-state\.limit\.npc\b", "NPC over the size limit", "This NPC record is too long. The limit counts the whole record.",
-     "Shorten it, or move background notes (routine, tastes, history) into a worldLore entry. Lore goes to the narrator too and "
-     "players don't see it. Start the entry with the NPC's name so the narrator knows who it's about."),
+     "Shorten it, or move background notes (routine, tastes, history) into a worldLore entry. Lore goes to the narrator too. "
+     "Start the entry with the NPC's name so the narrator knows who it's about."),
     (r"game-state\.limit\.story-start\b", "Story start over the size limit", "This story start is too long. The limit counts the whole start.",
      "Cut repeated rules from its questGenerationGuidance, or move long rules to a worldLore entry or aiInstructions."),
     (r"game-state\.limit\.ai-instruction\b", "AI instruction over the size limit", "One instruction entry is too long.",

@@ -122,3 +122,22 @@ def test_a_failing_follow_up_does_not_leave_the_window_stuck(win, qapp):
     qapp.processEvents()
     qapp.processEvents()
     assert not win.working and win.check_btn.isEnabled() and "no" in win.banner_body.text()
+
+
+def test_a_problem_reads_in_plain_words_and_help_stays_beside_a_hidden_edits_tab(qapp):
+    from types import SimpleNamespace
+    from world_push.findings import group
+    w = A.MainWindow()
+    path = "$.npcs.Ann"
+    code = "game-state.limit.npc"
+    w.fill_problems(SimpleNamespace(findings=group({"errors": [{"code": code, "path": path, "message": 'NPC "Ann" exceeds the 12,000 character limit by 57 characters'}]},
+                                                   {"errors": [{"code": code, "path": path, "message": 'NPC "Ann" exceeds the 8,000 character limit by 4,057 characters'}]})))
+    shown = w.problem_text.toPlainText()
+    assert "Voyage won't save" in shown and "Cut 57 characters to save" in shown and "Cut 4,057 characters to publish" in shown and "NPC: Ann" in shown and "$.npcs" not in shown
+    assert w.problems.topLevelItem(0).child(0).text(0) == "NPC: Ann"
+    assert w.tabs.tabText(w.edits_tab).startswith("Edits made in Studio")
+    w._set_edits_tab(3)
+    assert w.tabs.tabText(w.edits_tab) == "Edits made in Studio (3)" and w.tabs.isTabVisible(w.edits_tab)
+    w._set_edits_tab(0)
+    assert not w.tabs.isTabVisible(w.edits_tab) and w.tabs.isTabVisible(w.tabs.indexOf(w.help_text))
+    assert "12,000" in w.help_text.toPlainText()
