@@ -4,6 +4,10 @@ An unofficial desktop app for checking and pushing Voyage world JSON through Voy
 
 It tells you what's wrong before you push, shows exactly what would change, backs up the live draft first, and confirms what landed. It doesn't fix your file for you, and it never publishes: publishing stays in Studio.
 
+## Download
+
+Get the Linux or Windows file from the [Releases](../../releases) page. It's a single file with nothing to install. On Linux, mark it executable first (`chmod +x WorldPush-linux`). These builds aren't code-signed, so Windows may warn you the first time.
+
 ## Using it
 
 1. Run the app and paste your API key. In Studio: open any world, then Settings, then API keys. The key stays on your computer in a plain text file in your user folder (not encrypted), and is only sent to Voyage.
@@ -37,3 +41,5 @@ Python 3.11+:
     pyinstaller packaging/world_push.spec
 
 GitHub Actions builds Linux and Windows on a `v*` tag or by hand. Not made by or affiliated with Voyage or Latitude.
+
+The builds include Qt and PySide6, which are under the LGPL v3.
