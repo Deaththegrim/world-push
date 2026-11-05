@@ -42,4 +42,4 @@ Python 3.11+:
 
 GitHub Actions builds Linux and Windows on a `v*` tag or by hand. Not made by or affiliated with Voyage or Latitude.
 
-The builds include Qt and PySide6, which are under the LGPL v3.
+MIT licence (see LICENSE). The builds include Qt and PySide6, which are under the LGPL v3.
