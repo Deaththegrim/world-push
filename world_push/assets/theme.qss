@@ -1,0 +1,154 @@
+/* Templated QSS — placeholders {{key}} are substituted in app.py from PALETTES.
+   Only spacing/font/radius/hex values from the design system below.
+   Focus rings use border (QSS doesn't support :focus-visible or outline). */
+
+QWidget {
+    background-color: {bg};
+    color: {text};
+    font-family: "Inter", "Ubuntu", "Noto Sans", "DejaVu Sans";
+    font-size: 13px;
+}
+
+QFrame#Header {
+    background-color: {surface-elev};
+    border-bottom: 1px solid {border-subtle};
+}
+
+QFrame#Sidebar {
+    background-color: {surface};
+    border-right: 1px solid {border-subtle};
+}
+
+QFrame#Footer {
+    background-color: {bg};
+    border-top: 1px solid {border-subtle};
+    color: {text-faint};
+}
+
+QLabel#H1 {
+    font-size: 21px;
+    font-weight: bold;
+    color: {text};
+}
+
+QLabel#H2 {
+    font-size: 17px;
+    font-weight: bold;
+    color: {text};
+}
+
+QLabel#Footer {
+    color: {text-faint};
+    font-size: 11px;
+}
+
+QPushButton {
+    background-color: {surface-elev};
+    color: {text};
+    border: 1px solid {border-subtle};
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-weight: bold;
+}
+
+QPushButton:hover {
+    background-color: {surface-overlay};
+    border-color: {border-strong};
+}
+
+QPushButton:pressed {
+    background-color: {surface};
+}
+
+QPushButton:focus {
+    border: 2px solid {accent};
+}
+
+QPushButton#Primary {
+    background-color: {accent};
+    color: {text-on-accent};
+    border-color: {accent};
+}
+
+QPushButton#Primary:hover {
+    background-color: {accent-hover};
+    border-color: {accent-hover};
+}
+
+QPushButton#Primary:focus {
+    border: 2px solid {accent-soft};
+}
+
+QPushButton[role="nav"] {
+    background-color: transparent;
+    border: 1px solid transparent;
+    color: {text-muted};
+    text-align: left;
+    padding: 8px 12px;
+    font-weight: normal;
+}
+
+QPushButton[role="nav"]:hover {
+    background-color: {surface-elev};
+    color: {text};
+}
+
+QPushButton[role="nav"]:focus {
+    border: 2px solid {accent};
+}
+
+QPushButton[role="nav"][active="true"] {
+    background-color: {selected-bg};
+    color: {text};
+}
+
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: {surface};
+    color: {text};
+    border: 1px solid {border-subtle};
+    border-radius: 6px;
+    padding: 8px 12px;
+    selection-background-color: {accent};
+    selection-color: {text-on-accent};
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border: 2px solid {accent};
+}
+
+QScrollBar:vertical {
+    background-color: {bg};
+    width: 12px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background-color: {surface-elev};
+    border-radius: 6px;
+    min-height: 24px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: {surface-overlay};
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QFrame#Banner { border-radius: 6px; border: 1px solid {border-subtle}; background-color: {surface-elev}; }
+QFrame#Banner[state="ok"] { border-color: {success}; }
+QFrame#Banner[state="warn"] { border-color: {warning}; }
+QFrame#Banner[state="stop"] { border-color: {danger}; }
+QFrame#Banner QLabel { background: transparent; }
+QLabel#BannerTitle { font-size: 15px; font-weight: bold; }
+QLabel#Muted { color: {text-muted}; }
+QTreeWidget, QTextBrowser, QPlainTextEdit, QLineEdit, QComboBox { background-color: {surface}; border: 1px solid {border-subtle}; border-radius: 6px; padding: 4px; }
+QLineEdit:focus, QComboBox:focus, QTreeWidget:focus, QTextBrowser:focus { border: 2px solid {accent}; }
+QTreeWidget::item:selected { background-color: {selected-bg}; }
+QHeaderView::section { background-color: {surface-elev}; border: none; padding: 4px 8px; }
+QTabWidget::pane { border: 1px solid {border-subtle}; border-radius: 6px; }
+QTabBar::tab { background: {surface}; padding: 8px 16px; border-top-left-radius: 6px; border-top-right-radius: 6px; }
+QTabBar::tab:selected { background: {surface-elev}; color: {text}; font-weight: bold; }
+QPushButton:disabled { color: {text-faint}; background-color: {surface}; border-color: {border-subtle}; }
+QPushButton#Primary:disabled { background-color: {surface}; color: {text-faint}; border-color: {border-subtle}; }

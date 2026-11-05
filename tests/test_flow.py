@@ -1,0 +1,222 @@
+import copy
+import json
+
+import pytest
+
+from world_push import flow
+from world_push.api import ApiError
+from world_push.findings import group, local_checks
+from world_push.worldfile import WorldFileError, diff, fold, lost_on_save, read_state
+
+STATE = {"heroesVersion": 37, "npcs": {"Ann": {"name": "Ann", "level": 1}}, "worldVoices": {}, "compatibilityRevision": 13}
+
+
+def ok(stage="draft", errors=(), warnings=()):
+    return {"stage": stage, "valid": not errors, "errors": list(errors), "warnings": list(warnings)}
+
+
+class Fake:
+    """Voyage, as far as the flow can see it"""
+
+    def __init__(self, state=None, stored=None):
+        self.world = {"shortId": "abc", "title": "My World", "description": "keep me", "initialGameState": copy.deepcopy(state or STATE)}
+        self.etag, self.puts, self.draft, self.publish, self.stored = '"1"', [], ok(), ok("publish"), stored
+        self.fail_put = None
+
+    def download(self, _):
+        return copy.deepcopy(self.world), self.etag
+
+    def validate(self, _state, stage):
+        return self.draft if stage == "draft" else self.publish
+
+    def replace(self, world, etag):
+        if self.fail_put:
+            raise self.fail_put
+        assert etag == self.etag
+        self.puts.append(world)
+        self.world = copy.deepcopy(world)
+        if self.stored is not None:
+            self.world["initialGameState"] = copy.deepcopy(self.stored)
+        self.etag = f'"{len(self.puts) + 1}"'
+        return self.etag
+
+
+@pytest.fixture
+def dirs(tmp_path):
+    return {"data_dir": tmp_path / "data", "backup_dir": tmp_path / "backups"}
+
+
+def write(tmp_path, state=None, name="w.json", **change):
+    s = copy.deepcopy(state or STATE)
+    s["npcs"]["Ann"].update(change)
+    f = tmp_path / name
+    f.write_text(json.dumps(s), encoding="utf-8")
+    return f
+
+
+def do_check(client, path, dirs):
+    return flow.check(client, path, "abc", data_dir=dirs["data_dir"])
+
+
+def test_push_backs_up_the_live_draft_first_and_keeps_the_studio_page(tmp_path, dirs):
+    client = Fake()
+    c = do_check(client, write(tmp_path, level=2), dirs)
+    assert not c.blocked and c.first_push and [d[1] for d in c.changes] == [["npcs", "Ann", "level"]]
+    p = flow.push(client, c, **dirs)
+    assert json.loads(p.backup.read_text(encoding="utf-8"))["world"]["initialGameState"]["npcs"]["Ann"]["level"] == 1
+    assert client.puts[0]["description"] == "keep me" and client.puts[0]["initialGameState"]["npcs"]["Ann"]["level"] == 2
+    assert p.not_kept == []
+
+
+def test_a_backup_restores_by_pushing_it_like_any_file(tmp_path, dirs):
+    client = Fake()
+    p = flow.push(client, do_check(client, write(tmp_path, level=2), dirs), **dirs)
+    c = do_check(client, p.backup, dirs)
+    assert [(d[2], d[3]) for d in c.changes] == [(2, 1)]
+    flow.push(client, c, **dirs)
+    assert client.world["initialGameState"]["npcs"]["Ann"]["level"] == 1
+
+
+def test_a_failed_backup_means_no_write(tmp_path, dirs):
+    client = Fake()
+    c = do_check(client, write(tmp_path, level=2), dirs)
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    with pytest.raises(flow.PushStopped, match="backup"):
+        flow.push(client, c, data_dir=dirs["data_dir"], backup_dir=blocker)
+    assert not client.puts
+
+
+def test_studio_edits_since_the_last_push_need_the_typed_title(tmp_path, dirs):
+    client = Fake()
+    flow.push(client, do_check(client, write(tmp_path, level=2), dirs), **dirs)
+    client.world["initialGameState"]["npcs"]["Ann"]["level"] = 9
+    client.etag = '"studio"'
+    c = do_check(client, write(tmp_path, level=3), dirs)
+    assert c.moved and [d[3] for d in c.studio_edits] == [9] and not c.first_push
+    for wrong in (None, "", "my world"):
+        with pytest.raises(flow.PushStopped, match="title"):
+            flow.push(client, c, wrong, **dirs)
+    assert len(client.puts) == 1
+    flow.push(client, c, "My World", **dirs)
+    assert client.world["initialGameState"]["npcs"]["Ann"]["level"] == 3
+
+
+def test_voyages_own_bump_is_not_read_as_a_studio_edit(tmp_path, dirs):
+    client = Fake()
+    flow.push(client, do_check(client, write(tmp_path, level=2), dirs), **dirs)
+    client.world["initialGameState"]["compatibilityRevision"] = 14
+    client.etag = '"played"'
+    assert not do_check(client, write(tmp_path, level=3), dirs).moved
+
+
+def test_a_draft_that_moves_after_check_stops_the_push(tmp_path, dirs):
+    client = Fake()
+    c = do_check(client, write(tmp_path, level=2), dirs)
+    client.etag = '"later"'
+    with pytest.raises(flow.PushStopped, match="after you pressed Check"):
+        flow.push(client, c, **dirs)
+    assert not client.puts
+
+
+def test_draft_errors_block_and_publish_errors_only_warn(tmp_path, dirs):
+    client = Fake()
+    bad = {"code": "game-state.limit.npc", "message": 'NPC "Ann" exceeds the 8,000 character limit by 9 characters', "path": "$.npcs.Ann"}
+    client.publish = ok("publish", [bad])
+    c = do_check(client, write(tmp_path, level=2), dirs)
+    assert not c.blocked and not c.can_publish and c.findings[0].severity == "publish"
+    client.draft = ok("draft", [bad])
+    c = do_check(client, write(tmp_path, level=2), dirs)
+    assert c.blocked and c.findings[0].severity == "error" and len(c.findings[0].items) == 1
+    with pytest.raises(flow.PushStopped):
+        flow.push(client, c, **dirs)
+    assert not client.puts
+
+
+def test_nothing_to_push_and_another_version_are_blocked(tmp_path, dirs):
+    client = Fake()
+    assert any("already holds" in b for b in do_check(client, write(tmp_path), dirs).blocked)
+    other = {**copy.deepcopy(STATE), "heroesVersion": 36}
+    assert any("version 36" in b for b in do_check(client, write(tmp_path, other, level=2), dirs).blocked)
+
+
+def test_a_conflict_writes_nothing_and_says_so_and_an_unknown_outcome_says_that(tmp_path, dirs):
+    client = Fake()
+    c = do_check(client, write(tmp_path, level=2), dirs)
+    client.fail_put = ApiError(412, "revision_conflict", "stale")
+    with pytest.raises(flow.PushStopped, match="nothing was overwritten"):
+        flow.push(client, c, **dirs)
+    client.fail_put = ApiError(500, "boom", "boom")
+    with pytest.raises(flow.PushStopped, match="may or may not"):
+        flow.push(client, c, **dirs)
+    client.fail_put = ConnectionError("gone")
+    with pytest.raises(flow.PushStopped, match="may or may not"):
+        flow.push(client, c, **dirs)
+    assert not client.puts
+
+
+def test_what_voyage_drops_on_save_is_reported(tmp_path, dirs):
+    state = {**copy.deepcopy(STATE), "aiInstructions": {"generateDialogue": {"custom": "", "Extra": "gone on save"}}}
+    stored = {**copy.deepcopy(state), "aiInstructions": {"generateDialogue": {"custom": ""}}, "itemSettings": {"added": True}}
+    client = Fake(stored=stored)
+    c = do_check(client, write(tmp_path, state, level=1), dirs)
+    assert any(f.title.startswith("Instructions Voyage will throw away") for f in c.findings)
+    p = flow.push(client, c, **dirs)
+    assert [d[1] for d in p.not_kept] == [["aiInstructions", "generateDialogue", "Extra"]]
+
+
+def test_studios_mods_and_own_sections_survive_a_file_without_them(tmp_path, dirs):
+    live = {**copy.deepcopy(STATE), "mods": [{"shortId": "m"}], "characterCreationMusic": "x"}
+    file_state = {k: v for k, v in copy.deepcopy(STATE).items() if k != "compatibilityRevision"}
+    file_state["mods"] = []
+    client = Fake(live)
+    c = do_check(client, write(tmp_path, file_state, level=2), dirs)
+    assert c.sending["mods"] == [{"shortId": "m"}] and c.sending["compatibilityRevision"] == 13 and c.sending["characterCreationMusic"] == "x"
+
+
+def test_both_layouts_compare_as_one():
+    new = {"heroesVersion": 37, "triggerDefinitions": {"t": {}}, "parties": {"": {"quests": {"q": {}}}},
+           "npcs": {"A": {"initialKnown": True, "relationship": 5}}}
+    old = {"heroesVersion": 37, "triggers": {"t": {}}, "quests": {"q": {}}, "npcs": {"A": {"known": True, "initialRelationship": 5}}}
+    assert fold(new) == fold(old)
+
+
+def test_generated_quest_triggers_never_count():
+    a = fold({"heroesVersion": 37, "questTriggers": {"__generated_quest_progress__/q": {}, "mine": {}}})
+    assert a["questTriggers"] == {"mine": {}}
+
+
+@pytest.mark.parametrize("text, words", [("{oops", "line 1"), ('{"npcs": {}}', "whole Voyage world"), ("[1]", "whole Voyage world")])
+def test_a_bad_file_says_what_is_wrong(tmp_path, text, words):
+    f = tmp_path / "bad.json"
+    f.write_text(text)
+    with pytest.raises(WorldFileError, match=words):
+        read_state(f)
+
+
+def test_envelopes_and_a_bom_unwrap(tmp_path):
+    f = tmp_path / "e.json"
+    f.write_bytes(b"\xef\xbb\xbf" + json.dumps({"data": {"world": {"initialGameState": STATE}}}).encode())
+    assert read_state(f) == STATE
+
+
+def test_warnings_group_by_type_with_advice_and_nothing_is_hidden():
+    warnings = [{"code": "game-state.schema.unknown-field", "message": f"Unknown field 'rewardXp' is not defined {i}", "path": f"$.q{i}"} for i in range(3)]
+    warnings.append({"code": "game-state.invariant.invalid-reference", "message": 'Invalid type "X" at npcs > A > type. Allowed IDs: Y', "path": "$.npcs.A.type"})
+    warnings.append({"code": "brand.new", "message": "never seen", "path": "$.z"})
+    found = group(ok(warnings=warnings), ok("publish", warnings=warnings))
+    titles = {f.title: f for f in found}
+    assert len(titles["Quest reward fields Voyage ignores"].items) == 3
+    assert "npcTypes" in titles["NPC type that doesn't exist"].fix
+    assert titles["brand.new"].items == [("$.z", "never seen")] and sum(len(f.items) for f in found) == 5
+
+
+def test_a_voice_with_no_record_is_flagged_and_a_real_one_is_not():
+    s = {"npcs": {"A": {"worldVoiceId": "Nope"}, "B": {"worldVoiceId": "Real"}}, "worldVoices": {"Real": {}}}
+    found = local_checks(s)
+    assert [i[0] for i in found[0].items] == ["npcs > A > worldVoiceId"]
+
+
+def test_lost_on_save_ignores_what_voyage_adds_and_empties():
+    assert lost_on_save({"a": 1, "e": {}}, {"a": 1.0, "b": 2}) == []
+    assert diff({"a": 1}, {"a": 2}) == [("changed", ["a"], 1, 2)]

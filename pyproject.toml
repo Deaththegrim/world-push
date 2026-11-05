@@ -1,0 +1,22 @@
+[project]
+name = "world-push"
+version = "0.1.0"
+description = "Check and push Voyage world JSON through the Creator API, with a backup first. Unofficial."
+requires-python = ">=3.11"
+dependencies = ["PySide6-Essentials>=6.7", "requests>=2.31"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pyinstaller"]
+
+[project.scripts]
+world-push = "world_push.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["world_push*"]
+
+[tool.setuptools.package-data]
+"world_push.assets" = ["*.qss"]
