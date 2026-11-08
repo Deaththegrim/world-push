@@ -14,6 +14,11 @@ HELP = """
 <h3>Draft and publish</h3>
 <p>Your <b>draft</b> is your working copy in Studio. Players don't see it. <b>Publishing</b> is what puts it in front of players. This app only ever changes the draft, and you publish from Studio yourself.</p>
 <p>Voyage checks both. Drafts have higher limits than published worlds, so a file can be fine as a draft and still too big to publish. An NPC card, for example, can run to 12,000 characters in a draft, but it has to be 8,000 or under to publish.</p>
+<h3>"Draft" on a world you've published</h3>
+<p>That's normal. Once a world is published, Studio shows you its draft: your working copy. You can change the draft as much as you like and players won't see it. When you publish from Studio again, the draft becomes the published world. Creators on Voyage's Discord report that games players already started stay on the version they started with, and new games get the new one.</p>
+<p>So a push from this app changes only your draft. Nothing reaches players until you publish in Studio.</p>
+<h3>Where's the API key?</h3>
+<p>It isn't in your account settings. In Studio, open any one of your worlds, then that world's Settings, then API keys. One key works for every world your account owns.</p>
 <h3>What the labels mean</h3>
 <p><b>Blocks saving (red):</b> Voyage won't take the file until it's fixed.<br>
 <b>Blocks publishing (orange):</b> this one won't stop a save, but you can't publish until it's fixed.<br>

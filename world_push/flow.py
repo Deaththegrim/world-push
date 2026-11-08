@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .api import ApiError
-from .findings import SEMANTIC_CAP, budgets, group, local_checks
+from .findings import SEMANTIC_CAP, budgets, ending_checks, group, local_checks, premade_checks
 from .worldfile import KEEP_IF_ABSENT, authored, fold, lost_on_save, read_file, real_changes
 
 DATA_DIR = Path(os.environ.get("APPDATA") or os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "World Push"
@@ -146,6 +146,7 @@ def check(client, path, short_id, data_dir=DATA_DIR):
     notes.append(f"AI-judged triggers: {sem:,} of {SEMANTIC_CAP:,} to publish. AI-judged quest checks once saved: {qsem:,} of {SEMANTIC_CAP:,}"
                  + (f" ({built:,} of them built by Voyage from quests that complete on a story condition)." if built else "."))
     base = read_baseline(data_dir, short_id)
+    last = fold(base["state"]) if base else None   # the world as this app last pushed it
     edits = []
     if base and base["etag"] != etag:
         edits = real_changes(authored(fold(base["state"])), authored(live_state))
@@ -154,7 +155,8 @@ def check(client, path, short_id, data_dir=DATA_DIR):
         blocked.append("The live draft already holds this file. Nothing to push.")
         write_baseline(data_dir, short_id, etag, live_state)   # this is the state to notice Studio edits against from now on
     return Check(short_id, live.get("title") or short_id, etag, live, ours, draft, publish,
-                 group(draft, publish, local_checks(ours)), changes, edits, base is None and bool(changes), blocked, notes)
+                 group(draft, publish, local_checks(ours) + premade_checks(live_state, ours, last) + ending_checks(live_state, ours, last)), changes,
+                 edits, base is None and bool(changes), blocked, notes)
 
 
 @dataclass

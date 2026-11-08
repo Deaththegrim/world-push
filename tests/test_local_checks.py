@@ -60,3 +60,77 @@ def test_two_pairs_of_copies_on_one_ai_question_are_both_kinds_of_problem():
                        "c": trig("c", [STORY], [{"type": "y"}]), "d": trig("d", [STORY], [{"type": "y"}])}}
     titles = [f.title for f in duplicate_triggers(st)]
     assert titles == ["The same trigger more than once", "The same AI-judged question asked more than once"]
+
+
+def pm(name, text="a long enough backstory for this premade character"):
+    return {"name": name, "description": text, "traits": ["Fighter"], "portraitUrl": f"https://x/{name}.webp"}
+
+
+def test_a_push_that_drops_premades_says_which():
+    from world_push.findings import premade_checks
+    live = {"premadeCharacters": [pm("Ann", "a"), pm("Bo", "b"), pm("Cy", "c")]}
+    ours = {"premadeCharacters": [pm("Ann", "a")]}
+    [f] = premade_checks(live, ours)
+    assert f.title == "This push removes premade characters" and [w for w, _ in f.items] == ["Premade character: Bo", "Premade character: Cy"]
+
+
+def test_premades_studio_lost_since_the_last_push_and_whether_the_file_restores_them():
+    from world_push.findings import premade_checks
+    last = {"premadeCharacters": [pm("Ann", "a"), pm("Bo", "b"), pm("Cy", "c")]}
+    live = {"premadeCharacters": [pm("Ann", "a")]}
+    ours = {"premadeCharacters": [pm("Ann", "a"), pm("Bo", "b")]}
+    [f] = premade_checks(live, ours, last)
+    assert f.title == "Premade characters missing from the live draft"
+    assert f.items == [("Premade character: Bo", "Your file has it, so a push puts it back."), ("Premade character: Cy", "Your file doesn't have it either.")]
+    assert premade_checks(live, ours, None) == []   # no record of a last push: nothing to compare
+
+
+def test_premades_overwritten_with_one_text_are_found_but_different_portraits_do_not_hide_it():
+    from world_push.findings import premade_checks
+    ours = {"premadeCharacters": [pm("Ann"), pm("Bo"), pm("Cy", "her own very different and long enough story")]}
+    [f] = premade_checks(ours, ours)
+    assert f.title == "Premade characters that read exactly the same" and {w for w, _ in f.items} == {"Premade character: Ann", "Premade character: Bo"}
+
+
+def test_malformed_premades_never_stop_a_check():
+    from world_push.findings import premade_checks
+    for bad in (None, "x", {"a": 1}, [None, "x", 3, {"name": None}, {}]):
+        premade_checks({"premadeCharacters": bad}, {"premadeCharacters": bad}, {"premadeCharacters": bad})
+    assert premade_checks([], "x", 3) == []
+
+
+END = {"type": "end-game", "endScope": "players", "othersOutcome": "won"}
+
+
+def ends(where="triggers", **extra):
+    if where == "quests":
+        return {"quests": {"Q": {"onCompleteEffects": [END]}}, **extra}
+    return {where: {"finale": trig("finale", [TICK], [END])}, **extra}
+
+
+def test_endings_are_found_in_triggers_quest_triggers_and_quest_effects_and_described():
+    from world_push.findings import _endings
+    assert _endings(ends()) == {"Trigger: finale": "ends the game for the players who meet it; the others have won"}
+    assert list(_endings(ends("questTriggers"))) == ["Quest trigger: finale"]
+    assert list(_endings(ends("quests"))) == ["Quest: Q"]
+    assert _endings({"triggers": {"x": trig("x", [TICK], [{"type": "end-game"}])}}) == {"Trigger: x": "ends the game for everyone"}
+    assert _endings({"endGame": {"win": {"endCondition": "win"}}}) == {}   # the closing words alone end nothing
+
+
+def test_an_ending_studio_added_since_the_last_push_is_flagged_and_says_whether_the_file_keeps_it():
+    from world_push.findings import ending_checks
+    [f] = ending_checks(ends(), {}, {})
+    assert f.title == "Studio added a way for the game to end" and f.items[0][1].endswith("Your file doesn't.")
+    titles = [x.title for x in ending_checks(ends(), ends(), {})]
+    assert titles == ["Studio added a way for the game to end"] and ending_checks(ends(), ends(), {})[0].items[0][1].endswith("Your file has it too.")
+    assert ending_checks(ends(), ends(), None) == []        # no record of a last push
+    assert ending_checks(ends(), ends(), ends()) == []      # it was there when we last pushed: nobody added it
+
+
+def test_a_push_that_adds_an_ending_says_so_and_a_world_that_already_ends_is_quiet():
+    from world_push.findings import ending_checks
+    [f] = ending_checks({}, ends())
+    assert f.title == "This push adds a way for the game to end"
+    assert ending_checks(ends(), ends()) == []
+    for bad in (None, "x", {"triggers": "x"}, {"triggers": {"a": "x"}}):
+        ending_checks(bad, bad, bad)

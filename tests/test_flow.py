@@ -405,3 +405,28 @@ def test_publish_reads_no_when_this_app_finds_a_publish_blocker(tmp_path, dirs):
     state["quests"] = {"One": {"completionCondition": story}}   # no detailType counts as detailed
     c = do_check(Fake(), write(tmp_path, state, level=2), dirs)
     assert c.publish["valid"] and not c.can_publish
+
+
+def test_premades_studio_wiped_after_a_push_show_on_the_next_check(tmp_path, dirs):
+    state = copy.deepcopy(STATE)
+    state["premadeCharacters"] = [{"name": n, "description": f"{n}'s own long enough story text"} for n in ("Ann", "Bo", "Cy")]
+    client = Fake(state)
+    f = write(tmp_path, state, level=2)
+    flow.push(client, do_check(client, f, dirs), "My World", **dirs)
+    client.world["initialGameState"]["premadeCharacters"] = client.world["initialGameState"]["premadeCharacters"][:1]   # Studio's wipe
+    client.etag = '"wiped"'
+    c = do_check(client, write(tmp_path, state, level=3), dirs)
+    [lost] = [x for x in c.findings if x.title == "Premade characters missing from the live draft"]
+    assert {w for w, _ in lost.items} == {"Premade character: Bo", "Premade character: Cy"}
+
+
+def test_an_ending_studio_adds_after_a_push_shows_on_the_next_check(tmp_path, dirs):
+    client = Fake()
+    f = write(tmp_path, level=2)
+    flow.push(client, do_check(client, f, dirs), "My World", **dirs)
+    client.world["initialGameState"]["triggers"] = {"wrap": {"conditions": [{"type": "game-tick", "operator": "greaterThan", "value": 99}],
+                                                             "effects": [{"type": "end-game"}]}}   # the assistant's quiet ending
+    client.etag = '"studio"'
+    c = do_check(client, write(tmp_path, level=3), dirs)
+    [f] = [x for x in c.findings if x.title == "Studio added a way for the game to end"]
+    assert f.items == [("Trigger: wrap", "ends the game for everyone. Your file doesn't.")]

@@ -215,3 +215,90 @@ def local_checks(state):
                              "Complete some quests through objectives or a trigger instead of a story completionCondition, or remove some "
                              "AI-judged quest triggers.", [("quests", f"{built:,} quests complete on a story condition")]))
     return found + duplicate_triggers(state)
+
+
+def _premades(state):
+    """{name: record} of a world's premade characters; one with no name is keyed by its place in the list"""
+    out = {}
+    for i, p in enumerate(_list(state.get("premadeCharacters")) if isinstance(state, dict) else []):
+        if isinstance(p, dict):
+            out[str(p.get("name") or f"(premade {i + 1}, no name)")] = p
+    return out
+
+
+def premade_checks(live, ours, last_push=None):
+    """premades a push would take away, ones Studio lost since the last push, and ones overwritten to read the same. Studio has wiped or
+    overwritten premades when one is added or edited (bug VOY-2803, reported twice on Voyage's Discord in October 2026)."""
+    found = []
+    have, mine = _premades(live), _premades(ours)
+    gone = [n for n in have if n not in mine]
+    if gone:
+        found.append(Finding("warning", "This push removes premade characters", "The live draft has premade characters your file doesn't, so a push "
+                             "deletes them.", "If you meant to keep them, export a fresh copy from Studio and make your edits in that, or add "
+                             "them back to your file.", [(f"Premade character: {n}", "In the live draft, not in your file.") for n in gone]))
+    if last_push is not None:
+        lost = [n for n in _premades(last_push) if n not in have]
+        if lost:
+            back = [n for n in lost if n in mine]
+            found.append(Finding("warning", "Premade characters missing from the live draft", "These premades were in your last push from this app "
+                                 "and the live draft no longer has them. Studio has wiped premades when one was added or edited (Voyage bug "
+                                 "VOY-2803), so check this was you.", "Pushing your file puts back the ones it has. Any it doesn't have are in "
+                                 "your backups folder, in the backup from before your last push.",
+                                 [(f"Premade character: {n}", "Your file has it, so a push puts it back." if n in back else
+                                   "Your file doesn't have it either.") for n in lost]))
+    texts = {}
+    for n, p in mine.items():
+        body = json.dumps({k: v for k, v in p.items() if k not in ("name", "portraitUrl", "portraitFocusX", "portraitFocusY", "portraitZoom")},
+                          sort_keys=True)
+        if len(body) > 40:
+            texts.setdefault(body, []).append(n)
+    same = [names for names in texts.values() if len(names) > 1]
+    if same:
+        found.append(Finding("warning", "Premade characters that read exactly the same", "These premades have different names but the same "
+                             "description, traits and backstory. Studio has overwritten premades with one character's text (Voyage bug "
+                             "VOY-2803).", "If that wasn't on purpose, put each one's own text back from an older copy or a backup.",
+                             [(f"Premade character: {n}", "Same as " + _others(n, names)) for names in same for n in names]))
+    return found
+
+
+def _endings(state):
+    """{place: what it does} for every end-game effect: the only thing that ends a game (the endGame section is just the closing words)"""
+    out = {}
+    labels = {"triggers": "Trigger", "questTriggers": "Quest trigger", "quests": "Quest", "narrativeEvents": "Story event"}
+
+    def walk(x, place):
+        if isinstance(x, dict):
+            if x.get("type") == "end-game":
+                scope = "everyone" if x.get("endScope", "game") == "game" else "the players who meet it"
+                out[place] = f"ends the game for {scope}" + (f"; the others have {x['othersOutcome']}" if x.get("othersOutcome") else "")
+            for v in x.values():
+                walk(v, place)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v, place)
+
+    for sec, label in labels.items():
+        for k, rec in _dict(state.get(sec) if isinstance(state, dict) else None).items():
+            walk(rec, f"{label}: {k}")
+    return out
+
+
+def ending_checks(live, ours, last_push=None):
+    """a way for the game to end that Studio added since the last push, or that this push adds. Studio's assistant has added an ending to
+    a world meant to be endless without saying so (Voyage's Discord, 2026-10-18)."""
+    found = []
+    have, mine = _endings(live), _endings(ours)
+    if last_push is not None:
+        added = {p: d for p, d in have.items() if p not in _endings(last_push)}
+        if added:
+            found.append(Finding("warning", "Studio added a way for the game to end", "Since your last push from this app, the live draft gained "
+                                 "an end-game effect, which ends a player's game when it fires. Studio's assistant has added these without "
+                                 "saying so.", "If your world is meant to be endless, make sure your file doesn't have it either; a push "
+                                 "replaces the draft with your file.", [(p, d + (". Your file has it too." if p in mine else ". Your file doesn't."))
+                                                                        for p, d in added.items()]))
+    new = {p: d for p, d in mine.items() if p not in have}
+    if new:
+        found.append(Finding("warning", "This push adds a way for the game to end", "Your file has end-game effects the live draft doesn't. When "
+                             "one fires, the game ends.", "Fine if your world is meant to end there. If it's meant to be endless, remove them.",
+                             [(p, d) for p, d in new.items()]))
+    return found

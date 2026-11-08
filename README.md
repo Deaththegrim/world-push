@@ -22,7 +22,7 @@ These builds aren't code-signed, so the first time you run it on Windows, a blue
 
    On Problems, **Show** picks one kind (red, orange or grey) and **Find** narrows it to a name, field or word. **Copy report** puts the whole check on your clipboard as plain text, to paste to someone helping you.
 
-   The app also checks a few things Voyage's own check doesn't: triggers that are copies of each other, AI-judged questions asked more than once, and the AI-judged quest checks Voyage builds when it saves (a file can pass the check and still be over the 500 limit once saved). The banner shows how many AI-judged triggers you've used of the 500.
+   The app also checks a few things Voyage's own check doesn't: triggers that are copies of each other, AI-judged questions asked more than once, the AI-judged quest checks Voyage builds when it saves (a file can pass the check and still be over the 500 limit once saved), premade characters a push would delete or that Studio lost or overwrote since your last push, and a way for the game to end that Studio added or your push adds. The banner shows how many AI-judged triggers you've used of the 500.
 
    After you've checked a file, saving it again in your editor checks it again by itself.
 4. Press **Back up and push**. If Studio has edits since your last push, or this computer hasn't pushed this world before, you have to type the world's title to confirm.

@@ -121,3 +121,8 @@ def test_words_out_and_in_leave_punctuation_alone():
     from world_push.worddiff import marked
     assert marked("Hello, world.", "Hello; world!", "R", "A")[1:] == (0, 0)
     assert marked("She hates it.", "She loves it!", "R", "A")[1:] == (1, 1)
+
+
+def test_help_answers_the_questions_people_keep_asking():
+    from world_push.explain import HELP
+    assert '<h3>"Draft" on a world' in HELP and "won't see it" in HELP and "<h3>Where's the API key?</h3>" in HELP and "isn't in your account settings" in HELP
