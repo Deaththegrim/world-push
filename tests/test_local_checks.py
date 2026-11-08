@@ -110,11 +110,29 @@ def ends(where="triggers", **extra):
 
 def test_endings_are_found_in_triggers_quest_triggers_and_quest_effects_and_described():
     from world_push.findings import _endings
-    assert _endings(ends()) == {"Trigger: finale": "ends the game for the players who meet it; the others have won"}
-    assert list(_endings(ends("questTriggers"))) == ["Quest trigger: finale"]
-    assert list(_endings(ends("quests"))) == ["Quest: Q"]
-    assert _endings({"triggers": {"x": trig("x", [TICK], [{"type": "end-game"}])}}) == {"Trigger: x": "ends the game for everyone"}
-    assert _endings({"endGame": {"win": {"endCondition": "win"}}}) == {}   # the closing words alone end nothing
+    assert dict(_endings(ends())) == {("Trigger: finale", "ends the game for the players who meet it; the others have won"): 1}
+    assert [p for p, _ in _endings(ends("questTriggers"))] == ["Quest trigger: finale"]
+    assert [p for p, _ in _endings(ends("quests"))] == ["Quest: Q"]
+    assert dict(_endings({"triggers": {"x": trig("x", [TICK], [{"type": "end-game"}])}})) == {("Trigger: x", "ends the game for everyone"): 1}
+    assert not _endings({"endGame": {"win": {"endCondition": "win"}}})   # the closing words alone end nothing
+
+
+def test_a_win_and_a_loss_are_endings_too():
+    from world_push.findings import _endings
+    st = {"triggers": {"w": trig("w", [TICK], [{"type": "win-game"}]), "l": trig("l", [TICK], [{"type": "lose-game", "endScope": "players"}])}}
+    assert set(_endings(st)) == {("Trigger: w", "ends the game as a win for everyone"), ("Trigger: l", "ends the game as a loss for the players who meet it")}
+
+
+def test_a_second_ending_in_one_trigger_or_one_widened_to_everyone_reads_as_new():
+    from world_push.findings import ending_checks
+    one = {"triggers": {"t": trig("t", [TICK], [{"type": "end-game", "endScope": "players"}])}}
+    two = {"triggers": {"t": trig("t", [TICK], [{"type": "end-game", "endScope": "players"}, {"type": "end-game", "endScope": "players"}])}}
+    wide = {"triggers": {"t": trig("t", [TICK], [{"type": "end-game"}])}}
+    assert [f.title for f in ending_checks(one, two)] == ["This push adds a way for the game to end"]
+    [f] = ending_checks(one, wide)
+    assert f.items == [("Trigger: t", "ends the game for everyone")]
+    [f] = ending_checks(two, two, one)
+    assert f.title == "Studio added a way for the game to end" and f.items[0][1].endswith("Your file has it too.")
 
 
 def test_an_ending_studio_added_since_the_last_push_is_flagged_and_says_whether_the_file_keeps_it():
@@ -134,3 +152,21 @@ def test_a_push_that_adds_an_ending_says_so_and_a_world_that_already_ends_is_qui
     assert ending_checks(ends(), ends()) == []
     for bad in (None, "x", {"triggers": "x"}, {"triggers": {"a": "x"}}):
         ending_checks(bad, bad, bad)
+
+
+def test_two_premades_with_one_name_cannot_hide_a_deletion():
+    from world_push.findings import premade_checks
+    live = {"premadeCharacters": [pm("Vex", "first long enough story for this one"), pm("Vex", "second long enough story for that one")]}
+    ours = {"premadeCharacters": [pm("Vex", "first long enough story for this one")]}
+    [f] = premade_checks(live, ours)
+    assert f.items == [("Premade character: Vex", "In the live draft, not in your file (1 of the 2 with this name).")]
+    [f] = premade_checks(ours, ours, live)
+    assert f.title == "Premade characters missing from the live draft" and f.items[0][1].startswith("Your file doesn't have it either.")
+
+
+def test_an_unnamed_premade_moved_in_the_list_is_not_a_deletion_but_a_changed_one_is():
+    from world_push.findings import premade_checks
+    a, b = {"description": "nameless one with a long enough text"}, {"description": "nameless two with a long enough text"}
+    assert premade_checks({"premadeCharacters": [a, b]}, {"premadeCharacters": [b, a]}) == []
+    [f] = premade_checks({"premadeCharacters": [a, b]}, {"premadeCharacters": [a, {"description": "a different text entirely"}]})
+    assert f.title == "This push removes premade characters" and f.items[0][0].startswith("Premade character: (no name: ")

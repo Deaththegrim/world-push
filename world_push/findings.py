@@ -1,5 +1,6 @@
 """What's wrong and how to fix it. Voyage's errors and warnings grouped by type, each with plain advice. Display only: nothing here
 changes a world. A type with no rule below still shows Voyage's own message; it is never hidden."""
+import hashlib
 import json
 import re
 from collections import Counter
@@ -217,60 +218,85 @@ def local_checks(state):
     return found + duplicate_triggers(state)
 
 
+_PORTRAIT = ("portraitUrl", "portraitFocusX", "portraitFocusY", "portraitZoom")
+
+
+def _premade_key(p):
+    """a premade's name, or for one with no name a short print of its content, so moving it in the list changes nothing"""
+    if p.get("name"):
+        return str(p["name"])
+    return "(no name: " + hashlib.sha1(json.dumps(p, sort_keys=True).encode()).hexdigest()[:6] + ")"
+
+
 def _premades(state):
-    """{name: record} of a world's premade characters; one with no name is keyed by its place in the list"""
-    out = {}
-    for i, p in enumerate(_list(state.get("premadeCharacters")) if isinstance(state, dict) else []):
-        if isinstance(p, dict):
-            out[str(p.get("name") or f"(premade {i + 1}, no name)")] = p
-    return out
+    """[(key, record)] of a world's premade characters, in list order; two with one name are both kept"""
+    rows = _list(state.get("premadeCharacters")) if isinstance(state, dict) else []
+    return [(_premade_key(p), p) for p in rows if isinstance(p, dict)]
+
+
+def _short(have, mine):
+    """{key: how many fewer} where `mine` has fewer of a premade than `have`"""
+    a, b = Counter(k for k, _ in have), Counter(k for k, _ in mine)
+    return {k: n - b[k] for k, n in a.items() if n > b[k]}
+
+
+def _how_many(n, missing):
+    return "" if n == missing else f" ({missing:,} of the {n:,} with this name)"
 
 
 def premade_checks(live, ours, last_push=None):
     """premades a push would take away, ones Studio lost since the last push, and ones overwritten to read the same. Studio has wiped or
-    overwritten premades when one is added or edited (bug VOY-2803, reported twice on Voyage's Discord in October 2026)."""
+    overwritten premades when one is added or edited (bug VOY-2803, reported twice on Voyage's Discord in October 2026). Counted by name,
+    so two premades sharing a name can't hide one being lost."""
     found = []
     have, mine = _premades(live), _premades(ours)
-    gone = [n for n in have if n not in mine]
+    counts_live = Counter(k for k, _ in have)
+    gone = _short(have, mine)
     if gone:
         found.append(Finding("warning", "This push removes premade characters", "The live draft has premade characters your file doesn't, so a push "
                              "deletes them.", "If you meant to keep them, export a fresh copy from Studio and make your edits in that, or add "
-                             "them back to your file.", [(f"Premade character: {n}", "In the live draft, not in your file.") for n in gone]))
+                             "them back to your file.", [(f"Premade character: {k}", "In the live draft, not in your file" + _how_many(counts_live[k], n) + ".")
+                                                         for k, n in gone.items()]))
     if last_push is not None:
-        lost = [n for n in _premades(last_push) if n not in have]
+        before = _premades(last_push)
+        lost = _short(before, have)
         if lost:
-            back = [n for n in lost if n in mine]
+            counts_before, counts_mine = Counter(k for k, _ in before), Counter(k for k, _ in mine)
             found.append(Finding("warning", "Premade characters missing from the live draft", "These premades were in your last push from this app "
                                  "and the live draft no longer has them. Studio has wiped premades when one was added or edited (Voyage bug "
                                  "VOY-2803), so check this was you.", "Pushing your file puts back the ones it has. Any it doesn't have are in "
                                  "your backups folder, in the backup from before your last push.",
-                                 [(f"Premade character: {n}", "Your file has it, so a push puts it back." if n in back else
-                                   "Your file doesn't have it either.") for n in lost]))
+                                 [(f"Premade character: {k}", ("Your file has it, so a push puts it back." if counts_mine[k] >= counts_before[k] else
+                                                               "Your file doesn't have it either.") + _how_many(counts_before[k], n))
+                                  for k, n in lost.items()]))
     texts = {}
-    for n, p in mine.items():
-        body = json.dumps({k: v for k, v in p.items() if k not in ("name", "portraitUrl", "portraitFocusX", "portraitFocusY", "portraitZoom")},
-                          sort_keys=True)
+    for k, p in mine:
+        body = json.dumps({f: v for f, v in p.items() if f not in ("name",) + _PORTRAIT}, sort_keys=True)
         if len(body) > 40:
-            texts.setdefault(body, []).append(n)
-    same = [names for names in texts.values() if len(names) > 1]
+            texts.setdefault(body, []).append(k)
+    same = [names for names in texts.values() if len(set(names)) > 1]
     if same:
         found.append(Finding("warning", "Premade characters that read exactly the same", "These premades have different names but the same "
                              "description, traits and backstory. Studio has overwritten premades with one character's text (Voyage bug "
                              "VOY-2803).", "If that wasn't on purpose, put each one's own text back from an older copy or a backup.",
-                             [(f"Premade character: {n}", "Same as " + _others(n, names)) for names in same for n in names]))
+                             [(f"Premade character: {n}", "Same as " + _others(n, names)) for names in same for n in dict.fromkeys(names)]))
     return found
 
 
+ENDINGS = {"win-game": "ends the game as a win", "lose-game": "ends the game as a loss", "end-game": "ends the game"}   # Voyage's three
+
+
 def _endings(state):
-    """{place: what it does} for every end-game effect: the only thing that ends a game (the endGame section is just the closing words)"""
-    out = {}
+    """Counter of (place, what it does) for every effect that ends a game: win-game, lose-game or end-game (the endGame section is only
+    the closing words). Counted, so a second ending in the same record, or one widened to everyone, reads as new."""
+    out = Counter()
     labels = {"triggers": "Trigger", "questTriggers": "Quest trigger", "quests": "Quest", "narrativeEvents": "Story event"}
 
     def walk(x, place):
         if isinstance(x, dict):
-            if x.get("type") == "end-game":
+            if x.get("type") in ENDINGS:
                 scope = "everyone" if x.get("endScope", "game") == "game" else "the players who meet it"
-                out[place] = f"ends the game for {scope}" + (f"; the others have {x['othersOutcome']}" if x.get("othersOutcome") else "")
+                out[(place, f"{ENDINGS[x['type']]} for {scope}" + (f"; the others have {x['othersOutcome']}" if x.get("othersOutcome") else ""))] += 1
             for v in x.values():
                 walk(v, place)
         elif isinstance(x, list):
@@ -289,16 +315,17 @@ def ending_checks(live, ours, last_push=None):
     found = []
     have, mine = _endings(live), _endings(ours)
     if last_push is not None:
-        added = {p: d for p, d in have.items() if p not in _endings(last_push)}
+        added = have - _endings(last_push)
         if added:
             found.append(Finding("warning", "Studio added a way for the game to end", "Since your last push from this app, the live draft gained "
-                                 "an end-game effect, which ends a player's game when it fires. Studio's assistant has added these without "
-                                 "saying so.", "If your world is meant to be endless, make sure your file doesn't have it either; a push "
-                                 "replaces the draft with your file.", [(p, d + (". Your file has it too." if p in mine else ". Your file doesn't."))
-                                                                        for p, d in added.items()]))
-    new = {p: d for p, d in mine.items() if p not in have}
+                                 "an effect that ends a player's game when it fires (a win, a loss or a plain ending). Studio's assistant has "
+                                 "added these without saying so.", "If your world is meant to be endless, make sure your file doesn't have it "
+                                 "either; a push replaces the draft with your file.",
+                                 [(p, d + (". Your file has it too." if mine[(p, d)] >= have[(p, d)] else ". Your file doesn't."))
+                                  for (p, d) in added]))
+    new = mine - have
     if new:
-        found.append(Finding("warning", "This push adds a way for the game to end", "Your file has end-game effects the live draft doesn't. When "
-                             "one fires, the game ends.", "Fine if your world is meant to end there. If it's meant to be endless, remove them.",
-                             [(p, d) for p, d in new.items()]))
+        found.append(Finding("warning", "This push adds a way for the game to end", "Your file has effects that end the game which the live draft "
+                             "doesn't. When one fires, the game ends.", "Fine if your world is meant to end there. If it's meant to be endless, "
+                             "remove them.", [(p, d) for (p, d) in new]))
     return found
