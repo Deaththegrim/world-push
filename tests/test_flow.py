@@ -386,3 +386,22 @@ def test_voyage_refilling_its_own_fields_is_not_a_change():
     ours = {"unassignedAreas": {}, "itemSettings": {"keep": 1}, "npcs": {"A": {}}}
     from world_push.worldfile import real_changes
     assert [d[1] for d in real_changes(live, ours)] == [["npcs", "A", "gone"]]
+
+
+def test_voyages_own_quest_triggers_in_an_export_are_not_counted_twice(tmp_path, dirs):
+    state = copy.deepcopy(STATE)
+    story = {"type": "story", "query": "done"}
+    state["questTriggers"] = {f"__generated_quest_progress__/q{i}": {"conditions": [story], "effects": []} for i in range(flow.SEMANTIC_CAP + 1)}
+    state["quests"] = {"One": {"detailType": "detailed", "completionCondition": story}}
+    c = do_check(Fake(), write(tmp_path, state, level=2), dirs)
+    assert not [f for f in c.findings if "quest checks once saved" in f.title]
+    assert any(n.startswith("AI-judged triggers: 0 of 500") and "once saved: 1 of 500 (1 of them built by Voyage" in n for n in c.notes)
+
+
+def test_publish_reads_no_when_this_app_finds_a_publish_blocker(tmp_path, dirs):
+    state = copy.deepcopy(STATE)
+    story = {"type": "story", "query": "x"}
+    state["questTriggers"] = {f"q{i}": {"conditions": [story], "effects": [{"type": "story", "instruction": str(i)}]} for i in range(flow.SEMANTIC_CAP)}
+    state["quests"] = {"One": {"completionCondition": story}}   # no detailType counts as detailed
+    c = do_check(Fake(), write(tmp_path, state, level=2), dirs)
+    assert c.publish["valid"] and not c.can_publish

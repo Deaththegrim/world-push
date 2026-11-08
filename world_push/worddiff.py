@@ -5,9 +5,11 @@ import html
 import json
 import re
 
-TOKEN = re.compile(r"\s+|\w+|[^\w\s]")
-CONTEXT = 60   # unchanged tokens (a word and a space are one each) kept either side of an edit; longer runs are cut to "…"
-MAX_TOKENS = 60000   # past this the match is too slow to wait on in a window, and Before and After are shown alone
+TOKEN = re.compile(r"\s+|\w+\s*|[^\w\s]\s*")   # a word or mark carries the space after it, so spaces are no tokens of their own
+WORD = re.compile(r"\w")
+CONTEXT = 30   # unchanged words kept either side of an edit; longer runs are cut to "…"
+MAX_TOKENS = 20000   # both sides together, about 10,000 words each: under half a second at worst (timed 2026-11-09). Past it,
+                     # the match freezes the window for seconds, so Before and After are shown alone
 
 
 def as_text(value):
@@ -21,8 +23,9 @@ def _esc(text):
 
 
 def marked(old, new, removed_style, added_style):
-    """(HTML, words removed, words added), or None when the texts are too long to match. Unchanged runs longer than twice CONTEXT keep
-    only their ends."""
+    """(HTML, words removed, words added), or None when the texts are too long to match. Punctuation isn't counted as a word. An
+    unchanged run longer than twice CONTEXT keeps CONTEXT words beside each edit; one at the very start or end keeps only the side
+    next to the edit."""
     a, b = TOKEN.findall(as_text(old)), TOKEN.findall(as_text(new))
     if len(a) + len(b) > MAX_TOKENS:
         return None
@@ -38,9 +41,9 @@ def marked(old, new, removed_style, added_style):
                 out.append(_esc("".join(run)))
             continue
         if i2 > i1:
-            gone += sum(1 for t in a[i1:i2] if not t.isspace())
+            gone += sum(1 for t in a[i1:i2] if WORD.match(t))
             out.append(f"<span style='{removed_style}'>{_esc(''.join(a[i1:i2]))}</span>")
         if j2 > j1:
-            came += sum(1 for t in b[j1:j2] if not t.isspace())
+            came += sum(1 for t in b[j1:j2] if WORD.match(t))
             out.append(f"<span style='{added_style}'>{_esc(''.join(b[j1:j2]))}</span>")
     return "".join(out), gone, came

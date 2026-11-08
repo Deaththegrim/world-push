@@ -28,16 +28,17 @@ def save_key(key, data_dir=DATA_DIR):
     f.write_text(key.strip(), encoding="utf-8")
 
 
-def load_settings(data_dir=DATA_DIR):
+def load_settings(data_dir=None):
     """the last world and file, so the next start opens where this one left off; anything unreadable is a fresh start"""
     try:
-        got = json.loads((data_dir / "settings.json").read_text(encoding="utf-8"))
+        got = json.loads(((data_dir or DATA_DIR) / "settings.json").read_text(encoding="utf-8"))
         return got if isinstance(got, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def save_settings(data_dir=DATA_DIR, **values):
+def save_settings(data_dir=None, **values):
+    data_dir = data_dir or DATA_DIR   # read when called, so a test can point it elsewhere
     data_dir.mkdir(parents=True, exist_ok=True)
     _atomic(data_dir / "settings.json", json.dumps({**load_settings(data_dir), **values}, ensure_ascii=False))
 
@@ -108,7 +109,8 @@ class Check:
 
     @property
     def can_publish(self):
-        return bool(self.publish.get("valid")) and not self.publish.get("errors")
+        """Voyage's publish check, and nothing found here that stops a publish (the quest checks Voyage builds on save, say)"""
+        return bool(self.publish.get("valid")) and not self.publish.get("errors") and not any(f.severity in ("error", "publish") for f in self.findings)
 
 
 def check(client, path, short_id, data_dir=DATA_DIR):

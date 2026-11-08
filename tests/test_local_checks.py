@@ -43,3 +43,20 @@ def test_a_repeated_ai_question_is_found_and_mechanical_twins_are_normal():
 def test_a_long_list_of_twins_is_cut_short():
     st = {"triggers": {f"t{i}": trig(f"t{i}", [STORY], [{"type": str(i)}]) for i in range(9)}}
     assert duplicate_triggers(st)[0].items[0][1].endswith("and 4 more")
+
+
+def test_a_malformed_world_never_stops_the_local_checks():
+    for bad in ([], "x", 3, None, {"a": "x"}, {"a": {"conditions": "x"}}, {"a": {"conditions": [None, "x", {"type": ["story"]}]}}):
+        st = {"triggers": bad, "questTriggers": bad, "quests": bad, "npcs": bad, "aiInstructions": bad, "worldVoices": bad}
+        local_checks(st)
+        budgets(st)
+    st = {"quests": {"q": {"completionCondition": {"type": "story", "query": 3}}}, "npcs": {"a": {"worldVoiceId": ["x"]}},
+          "aiInstructions": {"generateDialogue": "text"}}
+    assert budgets(st) == (0, 0, 0) and local_checks(st) == []
+
+
+def test_two_pairs_of_copies_on_one_ai_question_are_both_kinds_of_problem():
+    st = {"triggers": {"a": trig("a", [STORY], [{"type": "x"}]), "b": trig("b", [STORY], [{"type": "x"}]),
+                       "c": trig("c", [STORY], [{"type": "y"}]), "d": trig("d", [STORY], [{"type": "y"}])}}
+    titles = [f.title for f in duplicate_triggers(st)]
+    assert titles == ["The same trigger more than once", "The same AI-judged question asked more than once"]

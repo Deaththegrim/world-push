@@ -8,9 +8,9 @@ def test_one_word_swapped_in_a_long_card_is_marked_and_the_rest_cut():
     old, new = f"{words} She hates the sea. {words}", f"{words} She loves the sea. {words}"
     text, gone, came = marked(old, new, R, A)
     assert (gone, came) == (1, 1)
-    assert "<span style='R'>hates</span><span style='A'>loves</span>" in text
+    assert "<span style='R'>hates </span><span style='A'>loves </span>" in text
     assert text.count("…") == 2 and "w100 " not in text and "w250 " not in text
-    assert f"w{500 - CONTEXT // 4} " in text   # context kept beside the edit
+    assert f"w{500 - CONTEXT // 2} " in text   # context kept beside the edit
 
 
 def test_text_is_escaped_and_newlines_kept():

@@ -27,7 +27,7 @@ These builds aren't code-signed, so the first time you run it on Windows, a blue
    After you've checked a file, saving it again in your editor checks it again by itself.
 4. Press **Back up and push**. If Studio has edits since your last push, or this computer hasn't pushed this world before, you have to type the world's title to confirm.
 
-The app remembers the last world and file for next time. When it starts, it asks GitHub whether a newer World Push is out, and shows a button if so. That request sends nothing about you or your worlds.
+The app remembers the world and file you last pressed Check on, for next time. When it starts, it asks GitHub whether a newer World Push is out, and shows a button if so. That request sends no key, no world and nothing from your files.
 
 ## Backups
 

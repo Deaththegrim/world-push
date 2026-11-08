@@ -25,6 +25,8 @@ REMOVED = f"background-color:{C['danger-dim']}; color:{C['text']}; text-decorati
 ADDED = f"background-color:{C['success-dim']}; color:{C['text']}"
 SEVERITY = {k: (SEVERITY_WORDS[k], C[token]) for k, token in (("error", "danger"), ("publish", "warning"), ("warning", "text-muted"))}
 ItemRole = Qt.ItemDataRole.UserRole + 1
+COPY_TIP = "Copies every problem as plain text, to paste to someone helping you"
+LOG = None   # where errors are written when the app has no console (the Windows build); set in main
 
 
 def explain(e):
@@ -39,7 +41,7 @@ def explain(e):
         return f"Voyage answered with an error: {e}"
     if isinstance(e, OSError):
         return f"Couldn't reach Voyage or read a file: {e}"
-    return f"Something unexpected went wrong: {type(e).__name__}: {e}"
+    return f"Something unexpected went wrong: {type(e).__name__}: {e}" + (f"\nThe details are in {LOG}" if LOG else "")
 
 
 class Signals(QObject):
@@ -86,6 +88,7 @@ class MainWindow(QMainWindow):
         self.tasks = set()
         self.working = False
         self.checked_path = None   # a file checked this session gets checked again when it's saved
+        self.saved_while_working = False   # a check that read the file before this save is stale when it lands
         self.watcher = QFileSystemWatcher(self)
         self.watcher.fileChanged.connect(self.file_saved)
         self.recheck = QTimer(self)
@@ -190,7 +193,7 @@ class MainWindow(QMainWindow):
         self.search.textChanged.connect(self.refill_problems)
         row.addWidget(self.search, 1)
         self.copy_btn = QPushButton("Copy report", self)
-        self.copy_btn.setToolTip("Copies every problem as plain text, to paste to someone helping you")
+        self.copy_btn.setToolTip(COPY_TIP)
         self.copy_btn.setEnabled(False)
         self.copy_btn.clicked.connect(self.copy_report)
         row.addWidget(self.copy_btn)
@@ -235,7 +238,8 @@ class MainWindow(QMainWindow):
         if on:
             self.push_btn.setEnabled(False)
 
-    def start(self, fn, done, failed=None):
+    def start(self, fn, done, failed=None, background=False):
+        """run fn off the window's thread. A background job (the update check) never touches the banner or the buttons."""
         task = Task(fn)
         task.setAutoDelete(False)
         self.tasks.add(task)   # the signal object must outlive the run
@@ -247,7 +251,8 @@ class MainWindow(QMainWindow):
                     slot(value)
                 except Exception as e:   # a failure in the follow-up must not leave the window disabled and silent
                     traceback.print_exc()
-                    self.on_failed(e)
+                    if not background:
+                        self.on_failed(e)
             return go
 
         task.signals.done.connect(finish(done))
@@ -256,6 +261,7 @@ class MainWindow(QMainWindow):
 
     def on_failed(self, e):
         self.busy(False)
+        self.saved_while_working = False
         self.set_banner("stop", "That didn't work.", explain(e))
 
     # the key and the world list
@@ -265,7 +271,7 @@ class MainWindow(QMainWindow):
         if isinstance(settings.get("file"), str) and Path(settings["file"]).is_file():
             self.set_file(settings["file"])
         self.remembered_world = settings.get("world")
-        self.start(lambda: updates.check(__version__), self.on_update, lambda e: print(f"update check failed: {e}", file=sys.stderr))
+        self.start(lambda: updates.check(__version__), self.on_update, lambda e: print(f"update check failed: {e}", file=sys.stderr), background=True)
         key = flow.load_key()
         if key:
             self.client = Client(key)
@@ -360,18 +366,27 @@ class MainWindow(QMainWindow):
             self.watcher.addPath(path)
         self.invalidate()
 
+    def watch(self):
+        """an editor that saves by replacing the file ends the watch on the old one"""
+        if self.path and Path(self.path).is_file() and self.path not in self.watcher.files():
+            self.watcher.addPath(self.path)
+
     def file_saved(self, path):
         if path != self.path:
             return
-        if Path(path).is_file() and path not in self.watcher.files():
-            self.watcher.addPath(path)   # an editor that saves by replacing the file ends the watch on the old one
-        if self.checked_path == path:
-            self.invalidate()
-            self.set_banner("", "The file changed. Checking it again...", "Check writes nothing to Voyage.")
-            self.recheck.start()
+        self.watch()
+        if self.checked_path != path:
+            return
+        if self.working:   # the running check or push keeps its banner; what lands is dealt with when it does
+            self.saved_while_working = True
+            return
+        self.invalidate()
+        self.set_banner("", "The file changed. Checking it again...", "Check writes nothing to Voyage.")
+        self.recheck.start()
 
     def recheck_now(self):
-        if self.working:   # a check or push is running; try again when it's had time to finish
+        self.watch()
+        if self.working or QApplication.activeModalWidget():   # busy, or a question is open: try again shortly
             self.recheck.start()
         elif self.checked_path == self.path and self.result is None:
             self.run_check()
@@ -382,6 +397,10 @@ class MainWindow(QMainWindow):
         self.push_btn.setEnabled(False)
         self.copy_btn.setEnabled(False)
         self.copy_btn.setText("Copy report")
+        self.copy_btn.setToolTip(COPY_TIP)
+        self.shown_findings = []   # problems from a check that no longer holds come off the screen with it
+        self.refill_problems()
+        self.tabs.setTabText(0, "Problems")
 
     # check
 
@@ -392,9 +411,10 @@ class MainWindow(QMainWindow):
             return
         client, path = self.client, self.path
         self.checked_path = path
+        self.watch()
         try:
             flow.save_settings(world=short_id, file=str(path))
-        except OSError as e:   # remembering is a convenience; it never stops a check
+        except (OSError, ValueError) as e:   # remembering is a convenience; it never stops a check
             print(f"couldn't save settings: {e}", file=sys.stderr)
         self.busy(True)
         self.set_banner("", "Checking...", "Downloading the live draft and asking Voyage. A big world can take a minute.")
@@ -402,6 +422,12 @@ class MainWindow(QMainWindow):
 
     def on_checked(self, c):
         self.busy(False)
+        if self.saved_while_working:   # this check read the file before it was saved again
+            self.saved_while_working = False
+            self.invalidate()
+            self.set_banner("", "The file changed while it was being checked. Checking it again...", "Check writes nothing to Voyage.")
+            self.recheck.start()
+            return
         self.result = c
         self.fill_problems(c)
         self.fill_changes(self.changes, c.changes, self.change_text, "from the live draft to your file")
@@ -447,11 +473,11 @@ class MainWindow(QMainWindow):
             shown = f"{len(items):,}" if len(items) == len(f.items) else f"{len(items):,} of {len(f.items):,}"
             top = QTreeWidgetItem(self.problems, [f"{label}: {f.title}", shown])
             top.setForeground(0, QBrush(QColor(colour)))
-            top.setData(0, ItemRole, (f, None))
+            top.setData(0, ItemRole, (f, None, items))
             first = first or top
             for where, message in items:
                 child = QTreeWidgetItem(top, [plain_place(where), ""])
-                child.setData(0, ItemRole, (f, (where, message)))
+                child.setData(0, ItemRole, (f, (where, message), None))
         if first:
             self.problems.setCurrentItem(first)
         elif hidden:
@@ -470,9 +496,10 @@ class MainWindow(QMainWindow):
     def show_problem(self, item, *_):
         if not item:
             return
-        f, one = item.data(0, ItemRole)
-        if one is None and len(f.items) == 1:
-            one = f.items[0]
+        f, one, items = item.data(0, ItemRole)
+        items = items or f.items   # what the filters left of it
+        if one is None and len(items) == 1:
+            one = items[0]
         parts = [f"<h3>{html.escape(f.title)}</h3><p>{html.escape(MEANS[f.severity])}</p>"]
         size = plain_size(one[1], f.severity) if one else None
         if size:
@@ -481,8 +508,8 @@ class MainWindow(QMainWindow):
         if one:
             parts.append(f"<p><b>Where</b><br>{html.escape(plain_place(one[0]))}</p><p><b>Voyage says</b><br>{html.escape(one[1])}</p>")
         else:
-            parts.append(f"<p>{len(f.items):,} places. Expand this line to see each one, or look at one below.</p>"
-                         f"<p><b>For example</b><br>{html.escape(plain_place(f.items[0][0]))}<br>{html.escape(f.items[0][1])}</p>")
+            parts.append(f"<p>{len(items):,} places. Expand this line to see each one, or look at one below.</p>"
+                         f"<p><b>For example</b><br>{html.escape(plain_place(items[0][0]))}<br>{html.escape(items[0][1])}</p>")
         self.problem_text.setHtml("".join(parts))
 
     def fill_changes(self, tree, changes, text, intro):
@@ -552,6 +579,9 @@ class MainWindow(QMainWindow):
         self.busy(False)
         self.invalidate()
         where = f"Backup of the draft as it was: {p.backup}"
+        if self.saved_while_working:   # the outcome stays on screen; the new file waits for Check
+            self.saved_while_working = False
+            where += "\nYour file changed during the push, so what was pushed is the version you checked. Press Check to look at the new one."
         if p.raced:
             self.set_banner("warn", "Pushed, but someone saved in Studio straight after.", f"Your push landed, then the draft changed again. Press Check to see those edits.\n{where}")
         elif p.not_kept:
@@ -587,7 +617,24 @@ def install_theme(app):
     app.setStyleSheet(qss)
 
 
+def log_to_file():
+    """a windowed build has no console, so what would go there goes to a file the error banner names"""
+    global LOG
+    if sys.stderr is not None:
+        return
+    try:
+        flow.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        LOG = flow.DATA_DIR / "log.txt"
+        if LOG.exists() and LOG.stat().st_size > 1_000_000:
+            LOG.replace(LOG.with_suffix(".old.txt"))
+        sys.stderr = sys.stdout = open(LOG, "a", encoding="utf-8", buffering=1)
+        print(f"--- World Push {__version__} started {time.strftime('%Y-%m-%d %H:%M:%S')}", file=sys.stderr)
+    except OSError:
+        LOG = None
+
+
 def main():
+    log_to_file()
     app = QApplication(sys.argv)
     app.setApplicationName("World Push")
     install_theme(app)

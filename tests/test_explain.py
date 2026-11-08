@@ -108,3 +108,16 @@ def test_the_change_summary_counts_records_and_names_them():
           ("changed", ["narratorStyle"], "a", "b")] + [("added", ["worldLore", f"e{i}"], None, "x") for i in range(8)]
     assert summarize(ch) == ["Lore entries: 8 added (e0, e1, e2, e3, e4, e5 and 2 more)", "Abilities: 2 added (Iron Fist, Guard)",
                              "NPCs: 1 added (Bo); 1 changed (Ann)", "Skills: 1 removed (old)", "narratorStyle: changed"]
+
+
+@pytest.mark.parametrize("message", ['triggerDefinitions.Warp Crossing Detour references missing locations "Warp Current: ".',
+                                     'questTriggers.Bell Ring Opens references missing areas "Bell Ring".'])
+def test_a_trigger_name_with_spaces_still_gets_the_place_advice(message):
+    from world_push.findings import _rule
+    assert _rule("game-state.invariant.invalid-reference", message)[0] == "Trigger watching a place that doesn't exist"
+
+
+def test_words_out_and_in_leave_punctuation_alone():
+    from world_push.worddiff import marked
+    assert marked("Hello, world.", "Hello; world!", "R", "A")[1:] == (0, 0)
+    assert marked("She hates it.", "She loves it!", "R", "A")[1:] == (1, 1)

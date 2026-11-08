@@ -210,3 +210,195 @@ def test_the_problem_filter_hides_and_counts(win):
     assert win.problems.topLevelItemCount() == 1 and win.problems.topLevelItem(0).text(1) == "1 of 2"
     win.search.setText("nothing like it")
     assert win.problems.topLevelItemCount() == 0 and "None of the 3 problems" in win.problem_text.toPlainText()
+
+
+def checked(**over):
+    from types import SimpleNamespace
+    base = dict(short_id="s", title="T", findings=[], changes=[], studio_edits=[], draft={"valid": True, "errors": []},
+                publish={"valid": True, "errors": [], "warnings": []}, notes=[], blocked=[], moved=False, first_push=False, can_publish=True,
+                needs_title=False)
+    return SimpleNamespace(**{**base, **over})
+
+
+def test_a_save_while_a_check_runs_throws_that_check_away_and_checks_again(win, tmp_path, monkeypatch):
+    f = tmp_path / "w.json"
+    f.write_text("{}", encoding="utf-8")
+    runs = []
+    monkeypatch.setattr(win, "run_check", lambda: runs.append(1))
+    win.set_file(str(f))
+    win.checked_path = str(f)
+    win.busy(True)
+    win.file_saved(str(f))
+    win.on_checked(checked())
+    assert win.result is None and not win.push_btn.isEnabled() and win.recheck.isActive()
+    win.recheck.stop()
+    win.recheck_now()
+    assert runs == [1]
+
+
+def test_a_save_during_a_push_keeps_the_push_outcome_on_screen(win, tmp_path):
+    from types import SimpleNamespace
+    f = tmp_path / "w.json"
+    f.write_text("{}", encoding="utf-8")
+    win.set_file(str(f))
+    win.checked_path = str(f)
+    win.busy(True)
+    win.file_saved(str(f))
+    assert not win.recheck.isActive()
+    win.on_pushed(SimpleNamespace(raced=False, not_kept=[], backup=tmp_path / "b.json"))
+    assert win.banner_title.text().startswith("Pushed") and "Your file changed during the push" in win.banner_body.text()
+
+
+def test_a_watch_lost_to_a_replacing_save_comes_back_and_other_files_are_ignored(win, tmp_path, monkeypatch):
+    f, g = tmp_path / "w.json", tmp_path / "g.json"
+    f.write_text("{}", encoding="utf-8")
+    g.write_text("{}", encoding="utf-8")
+    runs = []
+    monkeypatch.setattr(win, "run_check", lambda: runs.append(1))
+    win.set_file(str(f))
+    win.watcher.removePaths([str(f)])
+    win.file_saved(str(f))
+    assert str(f) in win.watcher.files()
+    win.checked_path = str(f)
+    win.file_saved("/somewhere/else.json")
+    assert not win.recheck.isActive()
+    win.file_saved(str(f))
+    win.set_file(str(g))   # switched files before the timer fired
+    assert win.watcher.files() == [str(g)]
+    win.recheck.stop()
+    win.recheck_now()
+    assert runs == []
+
+
+@pytest.mark.parametrize("change", ["new result", "working"])
+def test_any_change_to_the_check_under_the_confirm_question_stops_the_push(win, monkeypatch, change):
+    c = checked()
+    win.result, win.path = c, "/x/w.json"
+
+    def answer(*_a, **_k):
+        if change == "new result":
+            win.result = checked()
+        else:
+            win.working = True
+        return A.QMessageBox.StandardButton.Yes
+    monkeypatch.setattr(A.QMessageBox, "question", answer)
+    started = []
+    monkeypatch.setattr(win, "start", lambda *a, **k: started.append(a))
+    win.run_push()
+    assert not started and "nothing was pushed" in win.banner_title.text()
+
+
+def test_the_typed_title_path_is_guarded_too(win, monkeypatch):
+    c = checked(needs_title=True, moved=True, studio_edits=[("changed", ["a"], 1, 2)])
+    win.result, win.path = c, "/x/w.json"
+
+    def typed(*_a, **_k):
+        win.result = checked()
+        return "T", True
+    monkeypatch.setattr(A.QInputDialog, "getText", typed)
+    started = []
+    monkeypatch.setattr(win, "start", lambda *a, **k: started.append(a))
+    win.run_push()
+    assert not started and "nothing was pushed" in win.banner_title.text()
+
+
+def test_the_remembered_world_is_picked_unless_one_is_already_chosen(win):
+    worlds = [{"shortId": "a", "title": "A"}, {"shortId": "b", "title": "B"}]
+    win.remembered_world = "b"
+    win.on_worlds(worlds)
+    assert win.world.currentData() == "b"
+    win.world.setCurrentIndex(win.world.findData("a"))
+    win.on_worlds(worlds)
+    assert win.world.currentData() == "a"
+    win.world.clear()
+    win.remembered_world = "gone"
+    win.on_worlds(worlds)
+    assert win.world.currentData() in ("a", "b")
+
+
+def test_startup_restores_the_file_only_if_it_still_exists_and_never_waits_on_github(win, tmp_path, monkeypatch):
+    from world_push import flow
+    f = tmp_path / "w.json"
+    f.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(flow, "load_key", lambda *a: "")
+    monkeypatch.setattr(win, "ask_key", lambda: None)
+    monkeypatch.setattr(win, "start", lambda *a, **k: None)
+    monkeypatch.setattr(flow, "load_settings", lambda *a: {"file": "/missing.json", "world": "b"})
+    win.startup()
+    assert win.path is None and win.remembered_world == "b"
+    monkeypatch.setattr(flow, "load_settings", lambda *a: {"file": str(f)})
+    win.startup()
+    assert win.path == str(f)
+
+
+def test_a_settings_write_that_fails_never_stops_a_check(win, monkeypatch):
+    from world_push import flow
+    win.client, win.path = object(), "/x/w.json"
+    win.world.addItem("W", "s")
+    monkeypatch.setattr(flow, "save_settings", lambda **k: (_ for _ in ()).throw(ValueError("surrogates")))
+    started = []
+    monkeypatch.setattr(win, "start", lambda *a, **k: started.append(a))
+    win.run_check()
+    assert started
+
+
+def test_copy_report_after_a_real_check_and_reset_by_the_next(win, qapp):
+    from world_push.findings import Finding
+    win.path = "/x/w.json"
+    win.on_checked(checked(findings=[Finding("warning", "Odd", "w", "f", [("$.npcs.Ann", "odd field")])]))
+    assert win.copy_btn.isEnabled()
+    win.copy_report()
+    text = A.QGuiApplication.clipboard().text()
+    assert "World: T [s]" in text and "NPC: Ann" in text and win.copy_btn.text() == "Copied"
+    win.invalidate()
+    assert not win.copy_btn.isEnabled() and win.copy_btn.text() == "Copy report" and win.copy_btn.toolTip() == A.COPY_TIP
+    assert win.problems.topLevelItemCount() == 0 and win.tabs.tabText(0) == "Problems"
+
+
+def test_the_update_check_sends_no_key_and_shows_only_a_newer_build(win):
+    from world_push import updates
+
+    class S:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, headers=None, timeout=None):
+            self.calls.append((url, headers))
+            return type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: [{"tag_name": "v9.0.0", "html_url": "u", "prerelease": True}]})()
+    s = S()
+    assert updates.check("0.1.3", session=s) == ("v9.0.0", "u")
+    assert s.calls == [(updates.RELEASES, {"Accept": "application/vnd.github+json"})]
+    assert updates.newer("garbage", [{"tag_name": "v9"}]) is None
+    win.on_update(None)
+    assert not win.update_btn.isVisibleTo(win)
+    win.on_update(("v9.0.0", "u"))
+    assert win.update_btn.isVisibleTo(win) and "v9.0.0" in win.update_btn.text()
+
+
+def test_a_follow_up_error_in_a_background_job_leaves_the_window_alone(win, qapp):
+    win.busy(True)
+    win.set_banner("", "Loading your worlds...")
+    win.start(lambda: 1, lambda _v: 1 / 0, background=True)
+    win.pool.waitForDone(3000)
+    qapp.processEvents()
+    qapp.processEvents()
+    assert win.working and win.banner_title.text() == "Loading your worlds..."
+    win.busy(False)
+
+
+def test_no_recheck_starts_under_an_open_question(win, qapp, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+    runs = []
+    monkeypatch.setattr(win, "run_check", lambda: runs.append(1))
+    win.path = win.checked_path = "/x/w.json"
+    box = QDialog(win)
+    box.setModal(True)
+    box.show()
+    qapp.processEvents()
+    assert A.QApplication.activeModalWidget() is box
+    win.recheck_now()
+    assert not runs and win.recheck.isActive()
+    box.close()
+    win.recheck.stop()
+    win.recheck_now()
+    assert runs == [1]
