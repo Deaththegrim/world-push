@@ -1,5 +1,6 @@
 """What's wrong and how to fix it. Voyage's errors and warnings grouped by type, each with plain advice. Display only: nothing here
 changes a world. A type with no rule below still shows Voyage's own message; it is never hidden."""
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -37,6 +38,20 @@ RULES = [
      "Add that name to npcTypes, or change the NPC's type to one from the list in Voyage's message."),
     (r"invalid-reference.*currentArea is blank", "NPC with no area", "This NPC's location has areas, but no area is set, so they can turn up anywhere in that location.",
      "Fine if that's what you want. Otherwise set currentArea to one of the areas in Voyage's message."),
+    (r"invalid-reference.*references missing (?:quests|objectives)", "Trigger pointing at a quest or objective that doesn't exist",
+     "This trigger starts, completes or reveals a quest or objective the world doesn't have, so that step does nothing in play. "
+     "It's a usual reason a quest objective never ticks.",
+     "Match the questId to the quest's exact name, and the objectiveId to an id inside that quest's objectives. Voyage's message "
+     "names the one it couldn't find."),
+    (r"invalid-reference.*(?:triggers|triggerDefinitions)\.\S+ references missing (?:areas|locations|regions|realms)", "Trigger watching a place that doesn't exist",
+     "This trigger's condition names a place the world doesn't have, so the trigger never fires there.",
+     "A place condition has to name one real location or area exactly, as it's spelled in the world. It can't match part of a name "
+     "or a list. Fix the spelling, add the place, or use one condition per place."),
+    (r"invalid-choice.*Slot \"[^\"]*\" is for category", "Item in a slot meant for another category",
+     "This item's slot only takes items of the category Voyage names, and the item has a different category.",
+     "Change the item's category to the one Voyage names, or set its slot to one made for its own category."),
+    (r"invalid-choice", "Value that isn't one of the choices", "This field has to be one of a set list of values, and it isn't.",
+     "Change it to one of the values Voyage lists in its message, or add the value to that list if the list is yours."),
     (r"invalid-reference", "Reference to something that doesn't exist", "This field names a record the world doesn't have.",
      "Fix the name to match an existing record, or add the missing record. Voyage's message lists the allowed names."),
     (r"schema\.", "Field in the wrong shape", "This field doesn't match what Voyage expects.", "Compare it with the same field on a record that works."),
@@ -49,10 +64,6 @@ def _rule(code, message):
         if re.search(pattern, text):
             return title, wrong, fix
     return code or "Other", "Voyage flagged this. This app has no extra advice for this type yet.", "Follow Voyage's message below."
-
-
-def _template(message):
-    return re.sub(r'"[^"]*"', '"…"', re.sub(r"\d[\d,]*", "#", message))[:80]
 
 
 def group(draft, publish, local=()):
@@ -100,6 +111,68 @@ def group(draft, publish, local=()):
     return [f for f in local if f.severity == "error"] + found + [f for f in local if f.severity != "error"]
 
 
+SEMANTIC_CAP = 500           # Voyage's publish limit, on triggers and again on questTriggers (drafts allow 1.5x)
+SEMANTIC = ("story", "action")   # a condition the AI judges each turn, rather than a fact the game checks
+
+
+def _semantic(t):
+    return isinstance(t, dict) and any(isinstance(c, dict) and c.get("type") in SEMANTIC for c in t.get("conditions") or [])
+
+
+def built_quest_checks(state):
+    """questTriggers Voyage builds on save, one per detailed quest whose completion is a story condition. A file without them passes
+    Voyage's check, and the stored draft then can't publish (seen 2026-10-27: 458 sent, 835 stored)"""
+    return sum(1 for q in (state.get("quests") or {}).values() if isinstance(q, dict) and q.get("detailType", "detailed") == "detailed"
+               and isinstance(q.get("completionCondition"), dict) and q["completionCondition"].get("type") == "story"
+               and (q["completionCondition"].get("query") or "").strip())
+
+
+def budgets(state):
+    """(semantic triggers, semantic quest triggers as stored after a save, how many of those Voyage builds itself)"""
+    built = built_quest_checks(state)
+    return (sum(1 for t in (state.get("triggers") or {}).values() if _semantic(t)),
+            sum(1 for t in (state.get("questTriggers") or {}).values() if _semantic(t)) + built, built)
+
+
+def _same_trigger(t):
+    """what a trigger does, ignoring its name and the order of its conditions"""
+    conds = sorted(json.dumps(c, sort_keys=True) for c in t.get("conditions") or [])
+    rest = {k: v for k, v in t.items() if k not in ("name", "conditions")}
+    return json.dumps(conds), json.dumps(rest, sort_keys=True)
+
+
+def _others(n, names, most=4):
+    rest = [m for m in names if m != n]
+    return ", ".join(rest[:most]) + (f" and {len(rest) - most:,} more" if len(rest) > most else "")
+
+
+def duplicate_triggers(state):
+    """triggers that are the same, or ask the AI the same question, across triggers and questTriggers"""
+    whens, sames, semantic_when = {}, {}, {}
+    for sec, label in (("triggers", "Trigger"), ("questTriggers", "Quest trigger")):
+        for k, t in (state.get(sec) or {}).items():
+            if isinstance(t, dict) and t.get("conditions"):
+                when, rest = _same_trigger(t)
+                whens.setdefault(when, []).append(f"{label}: {k}")
+                semantic_when[when] = _semantic(t)
+                sames.setdefault((when, rest), []).append(f"{label}: {k}")
+    found = []
+    copies = [names for names in sames.values() if len(names) > 1]
+    if copies:
+        found.append(Finding("warning", "The same trigger more than once", "These triggers have the same conditions and do the same things, "
+                             "so whatever they do happens twice, and each semantic one uses up the budget again.",
+                             "Keep one and delete the others.", [(n, "Same as " + _others(n, names)) for names in copies for n in names]))
+    copied = {n for names in copies for n in names}
+    shared = [names for when, names in whens.items() if len(names) > 1 and not set(names) <= copied and semantic_when.get(when)]
+    if shared:   # mechanical twins are normal (one condition split across triggers for room); a repeated AI question is not
+        found.append(Finding("warning", "The same AI-judged question asked more than once", "These triggers have the same conditions, "
+                             "including one the AI judges, so the AI is asked the same question once for each of them every turn it's checked. "
+                             "Each one uses up a semantic trigger and a check from the turn's budget.",
+                             "Fine if they really need to stay apart. Otherwise merge their effects into one trigger.",
+                             [(n, "Same conditions as " + _others(n, names)) for names in shared for n in names]))
+    return found
+
+
 def local_checks(state):
     """problems Voyage's check passes but play or a save won't: found by hand when a real patch hit them"""
     found = []
@@ -119,4 +192,12 @@ def local_checks(state):
     if missing:
         found.append(Finding("warning", "NPC voice that doesn't exist", "These NPCs point at a world voice the world doesn't have, so they speak with a fallback voice.",
                              "Add that voice to worldVoices, or remove worldVoiceId from the NPC.", missing))
-    return found
+    sem, qsem, built = budgets(state)
+    if qsem > SEMANTIC_CAP and built:
+        found.append(Finding("publish", "Too many AI-judged quest checks once saved",
+                             f"Each detailed quest that completes on a story condition gets an AI-judged check Voyage builds on save. With your "
+                             f"{qsem - built:,} quest triggers that makes {qsem:,}, over the limit of {SEMANTIC_CAP:,}. Voyage's check can't see this "
+                             "yet, so the push works and publishing fails afterwards.",
+                             "Complete some quests through objectives or a trigger instead of a story completionCondition, or remove some "
+                             "semantic quest triggers.", [("quests", f"{built:,} quests complete on a story condition")]))
+    return found + duplicate_triggers(state)

@@ -3,23 +3,27 @@ import html
 import json
 import os
 import sys
+import time
 import traceback
 from importlib.resources import files
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, QStandardPaths, Qt, QThreadPool, QUrl, Signal, Slot
-from PySide6.QtGui import QBrush, QColor, QDesktopServices, QPalette
+from PySide6.QtCore import QFileSystemWatcher, QObject, QRunnable, QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QGuiApplication, QPalette
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QPushButton, QSplitter, QTabWidget, QTextBrowser, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from . import __version__, flow
+from . import __version__, flow, updates
 from .api import ApiError, Client, key_problem
-from .explain import HELP, MEANS, plain_place, plain_size
+from .explain import HELP, MEANS, SEVERITY_WORDS, matches, plain_place, plain_size, report, summarize
 from .tokens import PALETTES
+from .worddiff import marked
 from .worldfile import WorldFileError
 
 C = PALETTES["slate-violet"]
-SEVERITY = {"error": ("Blocks saving", C["danger"]), "publish": ("Blocks publishing", C["warning"]), "warning": ("Warning", C["text-muted"])}
+REMOVED = f"background-color:{C['danger-dim']}; color:{C['text']}; text-decoration:line-through"
+ADDED = f"background-color:{C['success-dim']}; color:{C['text']}"
+SEVERITY = {k: (SEVERITY_WORDS[k], C[token]) for k, token in (("error", "danger"), ("publish", "warning"), ("warning", "text-muted"))}
 ItemRole = Qt.ItemDataRole.UserRole + 1
 
 
@@ -81,6 +85,13 @@ class MainWindow(QMainWindow):
         self.client, self.path, self.result = None, None, None
         self.tasks = set()
         self.working = False
+        self.checked_path = None   # a file checked this session gets checked again when it's saved
+        self.watcher = QFileSystemWatcher(self)
+        self.watcher.fileChanged.connect(self.file_saved)
+        self.recheck = QTimer(self)
+        self.recheck.setSingleShot(True)
+        self.recheck.setInterval(1500)   # editors write in steps; wait for the last one
+        self.recheck.timeout.connect(self.recheck_now)
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -135,7 +146,7 @@ class MainWindow(QMainWindow):
         box.addWidget(self.banner)
 
         self.tabs = QTabWidget(self)
-        self.problems, self.problem_text = self._pane("Problems", ["Problem", "How many"], self.show_problem)
+        self.problems, self.problem_text = self._pane("Problems", ["Problem", "How many"], self.show_problem, self._problem_filters())
         self.changes, self.change_text = self._pane("What changes", ["Field", "Change"], self.show_change)
         self.edits, self.edit_text = self._pane("Edits made in Studio", ["Field", "Change"], self.show_change)
         self.edits_tab = self.tabs.count() - 1
@@ -148,6 +159,9 @@ class MainWindow(QMainWindow):
         self.backups_btn = QPushButton("Open backups folder", self)
         self.backups_btn.clicked.connect(self.open_backups)
         row.addWidget(self.backups_btn)
+        self.update_btn = QPushButton("", self)
+        self.update_btn.setVisible(False)
+        row.addWidget(self.update_btn)
         row.addStretch(1)
         note = QLabel("A push replaces the draft and never publishes. Publishing stays in Studio.", self)
         note.setObjectName("Muted")
@@ -161,7 +175,28 @@ class MainWindow(QMainWindow):
 
         self._set_edits_tab(0)
 
-    def _pane(self, title, headers, on_select):
+    def _problem_filters(self):
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Show"))
+        self.severity = QComboBox(self)
+        self.severity.addItem("Everything", None)
+        for k, (label, _) in SEVERITY.items():
+            self.severity.addItem(label, k)
+        self.severity.currentIndexChanged.connect(self.refill_problems)
+        row.addWidget(self.severity)
+        self.search = QLineEdit(self)
+        self.search.setPlaceholderText("Find a name, field or word")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self.refill_problems)
+        row.addWidget(self.search, 1)
+        self.copy_btn = QPushButton("Copy report", self)
+        self.copy_btn.setToolTip("Copies every problem as plain text, to paste to someone helping you")
+        self.copy_btn.setEnabled(False)
+        self.copy_btn.clicked.connect(self.copy_report)
+        row.addWidget(self.copy_btn)
+        return row
+
+    def _pane(self, title, headers, on_select, top=None):
         split = QSplitter(self)
         tree = QTreeWidget(split)
         tree.setHeaderLabels(headers)
@@ -172,7 +207,14 @@ class MainWindow(QMainWindow):
         split.addWidget(tree)
         split.addWidget(text)
         split.setSizes([640, 520])
-        self.tabs.addTab(split, title)
+        page = split
+        if top is not None:
+            page = QWidget(self)
+            inner = QVBoxLayout(page)
+            inner.setContentsMargins(0, 8, 0, 0)
+            inner.addLayout(top)
+            inner.addWidget(split, 1)
+        self.tabs.addTab(page, title)
         return tree, text
 
     def _set_edits_tab(self, count):
@@ -219,6 +261,11 @@ class MainWindow(QMainWindow):
     # the key and the world list
 
     def startup(self):
+        settings = flow.load_settings()
+        if isinstance(settings.get("file"), str) and Path(settings["file"]).is_file():
+            self.set_file(settings["file"])
+        self.remembered_world = settings.get("world")
+        self.start(lambda: updates.check(__version__), self.on_update, lambda e: print(f"update check failed: {e}", file=sys.stderr))
         key = flow.load_key()
         if key:
             self.client = Client(key)
@@ -255,9 +302,18 @@ class MainWindow(QMainWindow):
         self.set_banner("", "Loading your worlds...")
         self.start(self.client.worlds, self.on_worlds)
 
+    def on_update(self, found):
+        if not found:
+            return
+        tag, page = found
+        self.update_btn.setText(f"World Push {tag} is out")
+        self.update_btn.setToolTip(f"Opens the download page: {page}")
+        self.update_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(page)))
+        self.update_btn.setVisible(True)
+
     def on_worlds(self, worlds):
         self.busy(False)
-        keep = self.world.currentData()
+        keep = self.world.currentData() or getattr(self, "remembered_world", None)
         self.world.blockSignals(True)
         self.world.clear()
         for w in sorted(worlds, key=lambda r: (r.get("title") or "").lower()):
@@ -296,14 +352,36 @@ class MainWindow(QMainWindow):
             self.set_file(urls[0].toLocalFile())
 
     def set_file(self, path):
+        if self.watcher.files():
+            self.watcher.removePaths(self.watcher.files())
         self.path = path
         self.file.setText(path)
+        if path and Path(path).is_file():
+            self.watcher.addPath(path)
         self.invalidate()
+
+    def file_saved(self, path):
+        if path != self.path:
+            return
+        if Path(path).is_file() and path not in self.watcher.files():
+            self.watcher.addPath(path)   # an editor that saves by replacing the file ends the watch on the old one
+        if self.checked_path == path:
+            self.invalidate()
+            self.set_banner("", "The file changed. Checking it again...", "Check writes nothing to Voyage.")
+            self.recheck.start()
+
+    def recheck_now(self):
+        if self.working:   # a check or push is running; try again when it's had time to finish
+            self.recheck.start()
+        elif self.checked_path == self.path and self.result is None:
+            self.run_check()
 
     def invalidate(self, *_):
         """a check belongs to one file and one world"""
         self.result = None
         self.push_btn.setEnabled(False)
+        self.copy_btn.setEnabled(False)
+        self.copy_btn.setText("Copy report")
 
     # check
 
@@ -313,6 +391,11 @@ class MainWindow(QMainWindow):
             self.set_banner("warn", "Pick a world and a file first.")
             return
         client, path = self.client, self.path
+        self.checked_path = path
+        try:
+            flow.save_settings(world=short_id, file=str(path))
+        except OSError as e:   # remembering is a convenience; it never stops a check
+            print(f"couldn't save settings: {e}", file=sys.stderr)
         self.busy(True)
         self.set_banner("", "Checking...", "Downloading the live draft and asking Voyage. A big world can take a minute.")
         self.start(lambda: flow.check(client, path, short_id), self.on_checked)
@@ -345,22 +428,44 @@ class MainWindow(QMainWindow):
         self.push_btn.setEnabled(not c.blocked)
 
     def fill_problems(self, c):
+        self.shown_findings = c.findings
+        self.copy_btn.setEnabled(self.result is not None)
+        self.refill_problems()
+
+    def refill_problems(self, *_):
+        """the problems list under the Show and Find filters; a problem with no place left is left out"""
+        findings = getattr(self, "shown_findings", [])
         self.problems.clear()
         self.problem_text.clear()
-        first = None
-        for f in c.findings:
+        first, hidden = None, 0
+        for f in findings:
+            items = matches(f, self.severity.currentData(), self.search.text())
+            hidden += len(f.items) - len(items)
+            if not items:
+                continue
             label, colour = SEVERITY[f.severity]
-            top = QTreeWidgetItem(self.problems, [f"{label}: {f.title}", f"{len(f.items):,}"])
+            shown = f"{len(items):,}" if len(items) == len(f.items) else f"{len(items):,} of {len(f.items):,}"
+            top = QTreeWidgetItem(self.problems, [f"{label}: {f.title}", shown])
             top.setForeground(0, QBrush(QColor(colour)))
             top.setData(0, ItemRole, (f, None))
             first = first or top
-            for where, message in f.items:
+            for where, message in items:
                 child = QTreeWidgetItem(top, [plain_place(where), ""])
                 child.setData(0, ItemRole, (f, (where, message)))
         if first:
             self.problems.setCurrentItem(first)
+        elif hidden:
+            self.problem_text.setPlainText(f"None of the {hidden:,} problems match what Show and Find are set to.")
         else:
             self.problem_text.setPlainText("Voyage found nothing to report.")
+
+    def copy_report(self):
+        c = self.result
+        if not c:
+            return
+        QGuiApplication.clipboard().setText(report(c, Path(self.path or "").name, __version__, time.strftime("%Y-%m-%d %H:%M")))
+        self.copy_btn.setText("Copied")
+        self.copy_btn.setToolTip("The report is on your clipboard. Paste it into a message.")
 
     def show_problem(self, item, *_):
         if not item:
@@ -382,7 +487,8 @@ class MainWindow(QMainWindow):
 
     def fill_changes(self, tree, changes, text, intro):
         tree.clear()
-        text.setPlainText(f"{len(changes):,} changes {intro}." if changes else "No changes.")
+        text.setPlainText("\n".join([f"{len(changes):,} changes {intro}. In short:", ""] + summarize(changes)
+                                     + ["", "Pick a line on the left to see it before and after."]) if changes else "No changes.")
         sections = {}
         for kind, path, old, new in changes:
             section = str(path[0]) if path else "(whole world)"
@@ -399,14 +505,21 @@ class MainWindow(QMainWindow):
             return
         kind, path, old, new = item.data(0, ItemRole)
         pane = self.change_text if item.treeWidget() is self.changes else self.edit_text
-        pane.setHtml(f"<h3>{html.escape(' > '.join(map(str, path)))}</h3><p>{kind}</p><p><b>Before</b></p><pre style='white-space:pre-wrap'>{html.escape(preview(old))}</pre>"
+        parts = [f"<h3>{html.escape(' > '.join(map(str, path)))}</h3><p>{kind}</p>"]
+        found = marked(old, new, REMOVED, ADDED) if kind == "changed" else None
+        if found:
+            text, gone, came = found
+            parts.append(f"<p><b>What changed</b> ({gone:,} words out, {came:,} in; "
+                         f"<span style='{REMOVED}'>struck out</span> is gone, <span style='{ADDED}'>marked</span> is new)</p><p>{text}</p>")
+        parts.append(f"<p><b>Before</b></p><pre style='white-space:pre-wrap'>{html.escape(preview(old))}</pre>"
                      f"<p><b>After</b></p><pre style='white-space:pre-wrap'>{html.escape(preview(new))}</pre>")
+        pane.setHtml("".join(parts))
 
     # push
 
     def run_push(self):
         c = self.result
-        if not c or c.blocked:
+        if not c or c.blocked or not self.path:
             return
         typed = None
         where = f"{c.title} [{c.short_id}]"
@@ -427,6 +540,9 @@ class MainWindow(QMainWindow):
                                           "A backup of the live draft is saved first. Nothing gets published.")
             if answer != QMessageBox.StandardButton.Yes:
                 return
+        if self.result is not c or self.working:   # the file changed, or a check started, while the question was open
+            self.set_banner("warn", "The check changed while you were confirming, so nothing was pushed.", "Look at the new check, then push again.")
+            return
         client = self.client
         self.busy(True)
         self.set_banner("", "Backing up and pushing...", "Don't close the app until this finishes.")

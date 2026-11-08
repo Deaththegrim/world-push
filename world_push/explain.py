@@ -3,7 +3,7 @@ import re
 
 PLACES = {"npcs": "NPC", "npcTypes": "NPC type", "storyStarts": "Story start", "locations": "Location", "regions": "Region", "realms": "Realm",
           "factions": "Faction", "traits": "Trait", "traitCategories": "Creator page", "abilities": "Ability", "skills": "Skill", "quests": "Quest",
-          "questTriggers": "Quest trigger", "triggers": "Trigger", "narrativeEvents": "Story event", "worldLore": "Lore entry", "itemTypes": "Item",
+          "questTriggers": "Quest trigger", "triggers": "Trigger", "triggerDefinitions": "Trigger", "narrativeEvents": "Story event", "worldLore": "Lore entry", "itemTypes": "Item",
           "aiInstructions": "Narrator instructions", "premadeCharacters": "Premade character", "gameModes": "Game mode"}
 PLACE = re.compile(r'(\w+)(?:\.([^.\[]+)|\["((?:[^"\\]|\\.)*)"\])(.*)')
 OVER = re.compile(r"exceeds the ([\d,]+) character limit by ([\d,]+) character")
@@ -68,3 +68,63 @@ def plain_size(message, severity):
     if severity == "warning":
         return f"{size} The limit is {limit:,}."
     return f"{size} Cut {_chars(over)} to save it (limit {limit:,})."
+
+
+SEVERITY_WORDS = {"error": "Blocks saving", "publish": "Blocks publishing", "warning": "Warning"}
+
+
+def matches(finding, severity, words):
+    """the places in a finding that pass the filter: all of them when the problem's own title or advice holds the words"""
+    if severity and finding.severity != severity:
+        return []
+    words = (words or "").strip().lower()
+    if not words or words in f"{finding.title} {finding.wrong} {finding.fix}".lower():
+        return list(finding.items)
+    return [(where, said) for where, said in finding.items if words in f"{plain_place(where)} {where} {said}".lower()]
+
+
+def report(c, file_name, version, when):
+    """the whole check as plain text, to paste to someone helping"""
+    lines = [f"World Push {version} check, {when}", f"World: {c.title} [{c.short_id}]", f"File: {file_name}",
+             f"Save as a draft: {'yes' if not c.blocked and c.draft.get('valid') else 'no'}. Publish: {'yes' if c.can_publish else 'no'}.",
+             f"Changes from the live draft: {len(c.changes):,}. Edits made in Studio since the last push: {len(c.studio_edits):,}."]
+    lines += [f"Can't push: {b}" for b in c.blocked] + [f"Note: {n}" for n in c.notes]
+    if c.changes:
+        lines += ["", "What a push changes:"] + [f"  {line}" for line in summarize(c.changes)]
+    if not c.findings:
+        lines.append("\nVoyage found nothing to report.")
+    for f in c.findings:
+        lines += ["", f"{SEVERITY_WORDS[f.severity]}: {f.title} ({len(f.items):,})", f"  What's wrong: {f.wrong}", f"  How to fix it: {f.fix}"]
+        for where, said in f.items:
+            size = plain_size(said, f.severity)
+            lines.append(f"  - {plain_place(where)}: {said}" + (f" ({size})" if size else ""))
+    return "\n".join(lines) + "\n"
+
+
+def summarize(changes, most=6):
+    """what a push changes, by record: "Abilities: 59 added (Iron Fist, ...)", from the field changes"""
+    sections = {}
+    for kind, path, _old, _new in changes:
+        if not path:
+            continue
+        sec = sections.setdefault(str(path[0]), {"added": {}, "removed": {}, "changed": {}, "fields": 0})
+        if len(path) == 1:
+            sec["fields"] += 1
+        elif len(path) == 2 and kind in ("added", "removed"):
+            sec[kind][str(path[1])] = None
+        else:
+            sec["changed"][str(path[1])] = None
+    lines = []
+    for name, sec in sorted(sections.items(), key=lambda kv: -sum(len(kv[1][k]) for k in ("added", "removed", "changed"))):
+        label = PLACES.get(name)
+        label = name if not label else label if label.endswith("s") else label[:-1] + "ies" if label.endswith("y") else label + "s"
+        parts = []
+        for kind in ("added", "removed", "changed"):
+            names = [n for n in sec[kind] if kind != "changed" or (n not in sec["added"] and n not in sec["removed"])]
+            if names:
+                shown = ", ".join(names[:most]) + (f" and {len(names) - most:,} more" if len(names) > most else "")
+                parts.append(f"{len(names):,} {kind} ({shown})")
+        if sec["fields"]:
+            parts.append("changed" if not parts else "the section itself changed")
+        lines.append(f"{label}: " + "; ".join(parts))
+    return lines

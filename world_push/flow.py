@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .api import ApiError
-from .findings import group, local_checks
+from .findings import SEMANTIC_CAP, budgets, group, local_checks
 from .worldfile import KEEP_IF_ABSENT, authored, fold, lost_on_save, read_file, real_changes
 
 DATA_DIR = Path(os.environ.get("APPDATA") or os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "World Push"
@@ -26,6 +26,20 @@ def save_key(key, data_dir=DATA_DIR):
     f.touch(mode=0o600, exist_ok=True)
     f.chmod(0o600)
     f.write_text(key.strip(), encoding="utf-8")
+
+
+def load_settings(data_dir=DATA_DIR):
+    """the last world and file, so the next start opens where this one left off; anything unreadable is a fresh start"""
+    try:
+        got = json.loads((data_dir / "settings.json").read_text(encoding="utf-8"))
+        return got if isinstance(got, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(data_dir=DATA_DIR, **values):
+    data_dir.mkdir(parents=True, exist_ok=True)
+    _atomic(data_dir / "settings.json", json.dumps({**load_settings(data_dir), **values}, ensure_ascii=False))
 
 
 def _atomic(path, text):
@@ -126,6 +140,9 @@ def check(client, path, short_id, data_dir=DATA_DIR):
         notes.append(f"Lowered compatibilityRevision from {revision} to {ours['compatibilityRevision']}: Voyage's API only takes up to that number. It sets its own again on save.")
     if draft.get("errors") or not draft.get("valid"):
         blocked.append("Voyage would refuse to save this file. Fix the errors below first.")
+    sem, qsem, built = budgets(ours)
+    notes.append(f"AI-judged triggers: {sem:,} of {SEMANTIC_CAP:,} to publish. AI-judged quest checks once saved: {qsem:,} of {SEMANTIC_CAP:,}"
+                 + (f" ({built:,} of them built by Voyage from quests that complete on a story condition)." if built else "."))
     base = read_baseline(data_dir, short_id)
     edits = []
     if base and base["etag"] != etag:
