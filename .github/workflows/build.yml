@@ -44,6 +44,6 @@ jobs:
       - run: |
           mv out/WorldPush-Linux/WorldPush WorldPush-linux
           mv out/WorldPush-Windows/WorldPush.exe WorldPush-windows.exe
-          gh release create "$GITHUB_REF_NAME" WorldPush-linux WorldPush-windows.exe --repo "$GITHUB_REPOSITORY" --prerelease --title "World Push $GITHUB_REF_NAME" --notes "Test build: both size limits shown, problems explained in plain words, a help tab. Windows hasn't been run by a person yet."
+          gh release create "$GITHUB_REF_NAME" WorldPush-linux WorldPush-windows.exe --repo "$GITHUB_REPOSITORY" --prerelease --title "World Push $GITHUB_REF_NAME" --notes "Test build: a short summary of what a push changes, the words changed marked inside long text, Problems filters and Copy report, a count of AI-judged triggers against the 500 limit, copied and repeated triggers found, clearer advice for quest objectives, item slots and place conditions, and a check again on every save. Windows hasn't been run by a person yet."
         env:
           GH_TOKEN: ${{ github.token }}
