@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-PARTY_SECTIONS = ("quests", "questTriggers", "arcs", "narrativeEvents")
+PARTY_SECTIONS = ("quests", "questTriggers", "arcs", "narrativeEvents", "entities")   # entities: Studio exports since 2026-11-10
 KNOWN_SECTIONS = ("factions", "locations", "npcs", "realms", "regions")
 VOYAGE_OWN = ("compatibilityRevision",)                            # Voyage bumps this itself on save; its change is nobody's edit
 KEEP_IF_ABSENT = ("compatibilityRevision", "characterCreationMusic")   # a file without them keeps Studio's
@@ -70,8 +70,12 @@ def fold(state):
         out["triggers"] = out.pop("triggerDefinitions")
     parties = out.pop("parties", None)
     if parties is not None:
-        if set(parties) - {""} or set(parties.get("", {})) - set(PARTY_SECTIONS):
+        if not isinstance(parties, dict) or not isinstance(parties.get("", {}), dict):
             raise WorldFileError("This world's parties section has a shape this app doesn't know; nothing was sent.")
+        odd = [f'party "{p}"' for p in sorted(set(parties) - {""})] + sorted(set(parties.get("", {})) - set(PARTY_SECTIONS))
+        if odd:
+            raise WorldFileError("This world's parties section has a shape this app doesn't know (" + ", ".join(odd)
+                                 + "); nothing was sent. Send this message to the app's maker.")
         for k, v in parties.get("", {}).items():
             if k in out:
                 raise WorldFileError(f"This world holds {k} both at the top level and under parties; keep one.")

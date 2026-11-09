@@ -6,7 +6,7 @@ import pytest
 from world_push import flow
 from world_push.api import ApiError
 from world_push.findings import group, local_checks
-from world_push.worldfile import WorldFileError, diff, fold, lost_on_save, read_state
+from world_push.worldfile import WorldFileError, diff, fold, lost_on_save, read_state, real_changes
 
 STATE = {"heroesVersion": 37, "npcs": {"Ann": {"name": "Ann", "level": 1}}, "worldVoices": {}, "compatibilityRevision": 13}
 
@@ -249,6 +249,23 @@ def test_both_layouts_compare_as_one():
            "npcs": {"A": {"initialKnown": True, "relationship": 5}}}
     old = {"heroesVersion": 37, "triggers": {"t": {}}, "quests": {"q": {}}, "npcs": {"A": {"known": True, "initialRelationship": 5}}}
     assert fold(new) == fold(old)
+
+
+@pytest.mark.parametrize("parties, words", [
+    ({"": {"quests": {}, "entities": {}, "partyClock": {}}}, r"\(partyClock\)"),
+    ({"": {}, "p2": {}}, r'\(party "p2"\)'),
+    ({"": []}, "shape this app doesn't know; nothing"),
+    ([], "shape this app doesn't know; nothing"),
+])
+def test_an_unknown_parties_shape_names_what_it_found(parties, words):
+    with pytest.raises(WorldFileError, match=words):
+        fold({"heroesVersion": 37, "parties": parties})
+
+
+def test_studio_entities_section_folds_and_an_empty_one_is_no_change():
+    new = fold({"heroesVersion": 37, "parties": {"": {"entities": {}, "quests": {"q": {}}}}})
+    old = fold({"heroesVersion": 37, "quests": {"q": {}}})
+    assert new["entities"] == {} and real_changes(old, new) == []
 
 
 def test_generated_quest_triggers_never_count():
