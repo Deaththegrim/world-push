@@ -44,6 +44,6 @@ jobs:
       - run: |
           mv out/WorldPush-Linux/WorldPush WorldPush-linux
           mv out/WorldPush-Windows/WorldPush.exe WorldPush-windows.exe
-          gh release create "$GITHUB_REF_NAME" WorldPush-linux WorldPush-windows.exe --repo "$GITHUB_REPOSITORY" --prerelease --title "World Push $GITHUB_REF_NAME" --notes "Test build: warns before a push deletes premade characters, when Studio lost or overwrote premades since your last push, and when Studio added a way for the game to end (a win, a loss or a plain ending). The help tab explains Draft after publishing and where the API key is. Windows hasn't been run by a person yet."
+          gh release create "$GITHUB_REF_NAME" WorldPush-linux WorldPush-windows.exe --repo "$GITHUB_REPOSITORY" --prerelease --title "World Push $GITHUB_REF_NAME" --notes "Test build: works with world files exported from Studio after Voyage's 10 November update (they add an entities section, which this app used to refuse with \"parties section has a shape this app doesn't know\"). If a future export has a section this app doesn't know, the message now names it. Windows hasn't been run by a person yet."
         env:
           GH_TOKEN: ${{ github.token }}
